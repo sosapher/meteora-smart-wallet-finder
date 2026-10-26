@@ -5,7 +5,7 @@ Thanks for taking a look. This project is intentionally small and dependency-fre
 ## Development
 
 ```bash
-git clone https://github.com/<your-user>/meteora-smart-wallet-finder.git
+git clone https://github.com/sosapher/meteora-smart-wallet-finder.git
 cd meteora-smart-wallet-finder
 npm run setup
 npm test

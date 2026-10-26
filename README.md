@@ -1,5 +1,7 @@
 # Meteora Smart Wallet Finder
 
+[![test](https://github.com/sosapher/meteora-smart-wallet-finder/actions/workflows/test.yml/badge.svg)](https://github.com/sosapher/meteora-smart-wallet-finder/actions/workflows/test.yml)
+
 Read-only research bot that finds and scores **smart LP wallets on Meteora DLMM**, then
 exports them in a format that can be added manually to Meridian's
 `smart-wallets.json`.
@@ -28,7 +30,7 @@ Pool discovery ──> top LPers ──> candidate aggregation ──> deep chec
 ### On a fresh VPS
 
 ```bash
-git clone https://github.com/<your-user>/meteora-smart-wallet-finder.git
+git clone https://github.com/sosapher/meteora-smart-wallet-finder.git
 cd meteora-smart-wallet-finder
 npm run setup
 node finder.js config

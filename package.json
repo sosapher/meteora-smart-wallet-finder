@@ -36,5 +36,13 @@
     "README.md",
     "LICENSE",
     "SECURITY.md"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sosapher/meteora-smart-wallet-finder.git"
+  },
+  "homepage": "https://github.com/sosapher/meteora-smart-wallet-finder#readme",
+  "bugs": {
+    "url": "https://github.com/sosapher/meteora-smart-wallet-finder/issues"
+  }
 }
