@@ -1,0 +1,40 @@
+{
+  "name": "meteora-smart-wallet-finder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Find and score smart LP wallets on Meteora DLMM, with output compatible with Meridian smart-wallets.json",
+  "main": "finder.js",
+  "bin": {
+    "meteora-smart-wallets": "finder.js"
+  },
+  "scripts": {
+    "start": "node finder.js scan",
+    "scan": "node finder.js scan",
+    "watch": "node finder.js watch",
+    "pools": "node finder.js pools",
+    "export": "node finder.js export",
+    "test": "node --test",
+    "setup": "node -e \"const fs=require('fs'); if(!fs.existsSync('config.json')){fs.copyFileSync('config.example.json','config.json'); console.log('config.json created from config.example.json');} else {console.log('config.json already exists');}\""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "meteora",
+    "dlmm",
+    "solana",
+    "smart-wallet",
+    "lp"
+  ],
+  "license": "MIT",
+  "files": [
+    "finder.js",
+    "src/",
+    "config.example.json",
+    "ecosystem.config.cjs",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ]
+}
