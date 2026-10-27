@@ -2,7 +2,7 @@ name: test
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "legacy"]
   pull_request:
 
 permissions:
