@@ -248,6 +248,80 @@ export function printDetailedReport(result) {
   }
 }
 
+export const GMGN_MAX_WALLETS = 2000;
+
+export const GMGN_TIER_EMOJI = Object.freeze({
+  S: "🔥",
+  A: "⭐",
+  B: "👀",
+  C: "🧐",
+  D: "💤",
+  default: "👀",
+});
+
+export function gmgnEnabled(config) {
+  return config.export?.gmgn?.enabled !== false;
+}
+
+function gmgnName(candidate, config) {
+  const prefix = config.export?.gmgn?.namePrefix || "meteora";
+  const tier = String(candidate.score?.tier || "?").toUpperCase();
+  const score = Number(candidate.score?.score);
+  const tag = Number.isFinite(score) ? `${tier}${score}` : tier;
+  return `${prefix}-${tag}-${candidate.address.slice(0, 6)}`;
+}
+
+/**
+ * Build the array GMGN expects when batch-importing followed wallets:
+ * [{ address, name, emoji }]. GMGN accepts at most 2,000 addresses and the
+ * names must be unique inside one import.
+ */
+export function buildGmgnPayload(candidates, config) {
+  const configured = Number(
+    config.export?.gmgn?.maxWallets ?? GMGN_MAX_WALLETS,
+  );
+  const limit = Math.min(
+    GMGN_MAX_WALLETS,
+    Math.max(
+      1,
+      Number.isFinite(configured)
+        ? Math.floor(configured)
+        : GMGN_MAX_WALLETS,
+    ),
+  );
+
+  const selected = [...candidates]
+    .sort((a, b) => (b.score?.score || 0) - (a.score?.score || 0))
+    .slice(0, limit);
+
+  const usedNames = new Set();
+  return selected.map((candidate) => {
+    const base = gmgnName(candidate, config);
+    let name = base;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+
+    const tier = String(candidate.score?.tier || "").toUpperCase();
+    return {
+      address: candidate.address,
+      name,
+      emoji: GMGN_TIER_EMOJI[tier] || GMGN_TIER_EMOJI.default,
+    };
+  });
+}
+
+export function writeGmgnExport(candidates, config) {
+  const fileName = config.export?.gmgn?.fileName || "gmgn-follow.json";
+  const gmgnPath = path.join(config.paths.exportDir, fileName);
+  const wallets = buildGmgnPayload(candidates, config);
+  writeJsonAtomic(gmgnPath, wallets);
+  return { wallets, gmgnPath };
+}
+
 export function toMeridianEntry(candidate, config, existingNames = new Set()) {
   const prefix = config.export.namePrefix || "auto";
   const base = `${prefix}-${candidate.address.slice(0, 6)}`;
@@ -386,6 +460,10 @@ export function writeExports(scanResult, config, logger = null) {
   writeJsonAtomic(jsonPath, payload);
   writeJsonAtomic(snippetPath, wallets);
 
+  const gmgn = gmgnEnabled(config)
+    ? writeGmgnExport(selected, config)
+    : { wallets: [], gmgnPath: null };
+
   if (config.export.writeMarkdown) {
     const snippet = JSON.stringify(wallets, null, 2);
     const markdown = [
@@ -414,19 +492,38 @@ export function writeExports(scanResult, config, logger = null) {
       "node finder.js export --merge",
       "```",
       "",
+      ...(gmgn.gmgnPath
+        ? [
+            "## GMGN import",
+            "",
+            `\`${gmgn.gmgnPath}\` contains ${gmgn.wallets.length} wallet(s) in GMGN's`,
+            "batch-import format. Import it at https://gmgn.ai/follow -> Batch import.",
+            "GMGN accepts at most 2,000 addresses per import.",
+            "",
+          ]
+        : []),
     ].join("\n");
     fs.writeFileSync(markdownPath, markdown, "utf8");
   }
 
   logger?.info(
-    `Exports written: ${wallets.length} wallet(s) -> ${jsonPath}`,
+    `Exports written: ${wallets.length} wallet(s) -> ${jsonPath}` +
+      (gmgn.gmgnPath
+        ? `; ${gmgn.wallets.length} GMGN wallet(s) -> ${gmgn.gmgnPath}`
+        : ""),
   );
 
   return {
     exported: wallets.length,
     wallets,
     detailed,
-    paths: { jsonPath, snippetPath, markdownPath },
+    gmgnWallets: gmgn.wallets,
+    paths: {
+      jsonPath,
+      snippetPath,
+      markdownPath,
+      gmgnPath: gmgn.gmgnPath,
+    },
   };
 }
 

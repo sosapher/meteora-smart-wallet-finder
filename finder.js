@@ -56,8 +56,9 @@ COMMANDS
                     score them, and write exports.
   check <wallet>    Deep-check one Solana wallet across scanned pools.
   pools             List candidate pools that pass the filters.
-  export            Re-write exports from the last scan. Use --merge to add
-                    the results to Meridian's smart-wallets.json (backup made).
+  export            Re-write exports from the last scan (Meridian + GMGN). Use
+                    --merge to add the results to Meridian's smart-wallets.json
+                    (backup made).
   watch             Run scan on an interval, alert on new recommended wallets.
   bot               Start the Telegram control bot (/scan, /stop, /status).
   hygiene <wallet>  Check wallet age, SOL balance, on-chain activity, and
@@ -608,6 +609,11 @@ async function runExport(ctx) {
     console.log(JSON.stringify(result.wallets, null, 2));
   } else {
     logger.info(`Exported ${result.exported} wallet(s) to ${result.paths.jsonPath}`);
+    if (result.paths.gmgnPath) {
+      logger.info(
+        `GMGN list: ${result.gmgnWallets.length} wallet(s) -> ${result.paths.gmgnPath}`,
+      );
+    }
     if (selected.length > 0) {
       printCandidates(selected, { limit: selected.length });
     }

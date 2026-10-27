@@ -6,7 +6,9 @@ This project does not contain private keys, signing code, or transaction
 submission. It performs HTTP requests to the Meteora/Agent Meridian data APIs
 and, when enabled, the Telegram Bot API and the Helius RPC read-only methods
 (`getBalance`, `getSignaturesForAddress`, `getTransaction`, `getAccountInfo`),
-and writes local files for cache, logs, state, and exports.
+and writes local files for cache, logs, state, and exports. GMGN support only
+writes `exports/gmgn-follow.json`; it has no GMGN API client and never uploads or
+imports anything automatically.
 
 The Telegram control bot is restricted to an explicit allowlist of chat IDs and
 a fixed command set. It never executes arbitrary shell commands.

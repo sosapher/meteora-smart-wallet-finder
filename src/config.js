@@ -80,6 +80,12 @@ export const DEFAULT_CONFIG = {
     meridianSmartWalletsPath: "../meridian/smart-wallets.json",
     excludeExisting: true,
     writeMarkdown: true,
+    gmgn: {
+      enabled: true,
+      maxWallets: 2000,
+      namePrefix: "meteora",
+      fileName: "gmgn-follow.json",
+    },
   },
   watch: {
     intervalMinutes: 30,

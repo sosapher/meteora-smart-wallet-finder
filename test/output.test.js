@@ -6,6 +6,8 @@ import test from "node:test";
 import { DEFAULT_CONFIG, deepMerge } from "../src/config.js";
 import {
   buildExportPayload,
+  buildGmgnPayload,
+  GMGN_MAX_WALLETS,
   mergeIntoMeridian,
   selectExportCandidates,
   writeExports,
@@ -157,14 +159,104 @@ test("writes JSON, snippet and markdown exports", () => {
   assert.ok(fs.existsSync(result.paths.jsonPath));
   assert.ok(fs.existsSync(result.paths.snippetPath));
   assert.ok(fs.existsSync(result.paths.markdownPath));
+  assert.ok(fs.existsSync(result.paths.gmgnPath));
 
   const snippet = JSON.parse(fs.readFileSync(result.paths.snippetPath, "utf8"));
   assert.equal(snippet[0].address, WALLET_A);
   assert.equal(snippet[0]._meta, undefined);
 
+  const gmgn = JSON.parse(fs.readFileSync(result.paths.gmgnPath, "utf8"));
+  assert.deepEqual(gmgn, [
+    {
+      address: WALLET_A,
+      name: "meteora-S88-7Weigv",
+      emoji: "🔥",
+    },
+  ]);
+
   const markdown = fs.readFileSync(result.paths.markdownPath, "utf8");
   assert.match(markdown, /Recommended Meteora smart wallets/);
   assert.match(markdown, new RegExp(WALLET_A));
+  assert.match(markdown, /GMGN import/);
+});
+
+test("builds GMGN import entries with unique names and tier emojis", () => {
+  const config = baseConfig({ export: { gmgn: { namePrefix: "meteora" } } });
+  const samePrefix = "7WeigvZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+
+  const payload = buildGmgnPayload(
+    [
+      candidate(WALLET_A, 90),
+      candidate(samePrefix, 90),
+      candidate(WALLET_B, 82),
+      candidate(WALLET_C, 70),
+    ],
+    config,
+  );
+
+  assert.deepEqual(Object.keys(payload[0]), ["address", "name", "emoji"]);
+  assert.equal(payload[0].name, "meteora-S90-7Weigv");
+  assert.equal(payload[1].name, "meteora-S90-7Weigv-2");
+  assert.notEqual(payload[0].name, payload[1].name);
+  assert.equal(payload[0].emoji, "🔥");
+  assert.equal(payload[2].emoji, "⭐");
+  assert.equal(payload[3].emoji, "👀");
+});
+
+test("caps GMGN exports at 2000 wallets", () => {
+  const config = baseConfig({
+    export: { gmgn: { maxWallets: 5000 } },
+  });
+  const candidates = Array.from({ length: GMGN_MAX_WALLETS + 25 }, (_, index) => {
+    const address = `W${String(index).padStart(5, "0")}${"x".repeat(38)}`;
+    return candidate(address, 90);
+  });
+
+  const payload = buildGmgnPayload(candidates, config);
+  assert.equal(payload.length, GMGN_MAX_WALLETS);
+  assert.equal(new Set(payload.map((entry) => entry.name)).size, GMGN_MAX_WALLETS);
+});
+
+test("writes an empty GMGN file when nothing qualifies", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: { exportDir: path.join(dir, "exports") },
+    export: {
+      meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
+      writeMarkdown: true,
+    },
+  });
+  fs.mkdirSync(config.paths.exportDir, { recursive: true });
+
+  const result = writeExports({ candidates: [] }, config);
+
+  assert.equal(result.exported, 0);
+  assert.deepEqual(result.gmgnWallets, []);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(result.paths.gmgnPath, "utf8")),
+    [],
+  );
+});
+
+test("skips the GMGN file when disabled", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: { exportDir: path.join(dir, "exports") },
+    export: {
+      meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
+      gmgn: { enabled: false },
+    },
+  });
+  fs.mkdirSync(config.paths.exportDir, { recursive: true });
+
+  const result = writeExports(
+    { candidates: [candidate(WALLET_A, 88)] },
+    config,
+  );
+
+  assert.equal(result.paths.gmgnPath, null);
+  assert.equal(result.gmgnWallets.length, 0);
+  assert.ok(!fs.existsSync(path.join(config.paths.exportDir, "gmgn-follow.json")));
 });
 
 test("merges new wallets, skips duplicates and creates a backup", () => {

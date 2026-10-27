@@ -72,7 +72,13 @@
     "type": "lp",
     "meridianSmartWalletsPath": "../meridian/smart-wallets.json",
     "excludeExisting": true,
-    "writeMarkdown": true
+    "writeMarkdown": true,
+    "gmgn": {
+      "enabled": true,
+      "maxWallets": 2000,
+      "namePrefix": "meteora",
+      "fileName": "gmgn-follow.json"
+    }
   },
   "watch": {
     "intervalMinutes": 30,

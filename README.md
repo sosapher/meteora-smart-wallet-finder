@@ -3,8 +3,8 @@
 [![test](https://github.com/sosapher/meteora-smart-wallet-finder/actions/workflows/test.yml/badge.svg)](https://github.com/sosapher/meteora-smart-wallet-finder/actions/workflows/test.yml)
 
 Read-only research bot that finds and scores **smart LP wallets on Meteora DLMM**, then
-exports them in a format that can be added manually to Meridian's
-`smart-wallets.json`.
+exports them in formats that can be added manually to Meridian's
+`smart-wallets.json` or batch-imported into **GMGN's followed-wallet list**.
 
 It never touches private keys, never signs transactions, and never modifies Meridian
 unless you explicitly run `export --merge`. Scans can be triggered from the CLI or
@@ -19,6 +19,7 @@ Pool discovery ──> top LPers ──> candidate aggregation ──> deep chec
                                                     metrics + score
                                                               │
                              exports/recommended.*  ──>  manual Meridian entry
+                             exports/gmgn-follow.json ──>  GMGN batch import
 ```
 
 ## Requirements
@@ -121,6 +122,7 @@ Run `node finder.js --help` for every option.
 | `exports/recommended.json` | Wrapper with metadata and criteria |
 | `exports/recommended.snippet.json` | Plain array ready to copy |
 | `exports/recommended.md` | Human-readable report |
+| `exports/gmgn-follow.json` | GMGN batch-import array (`address`, `name`, `emoji`) |
 | `data/finder.log` | Append-only log |
 
 `exports/recommended.snippet.json` contains entries in Meridian's format:
@@ -139,6 +141,21 @@ Run `node finder.js --help` for every option.
 
 Only `name`, `address`, and `type` matter to Meridian. `category` is display-only.
 `type` must be `"lp"` for Meridian's smart-LP checks to include the wallet.
+
+`exports/gmgn-follow.json` uses GMGN's batch-import format instead:
+
+```json
+[
+  {
+    "address": "7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK",
+    "name": "meteora-S88-7Weigv",
+    "emoji": "🔥"
+  }
+]
+```
+
+The name embeds the tier and score, and the emoji follows the tier:
+`S` 🔥, `A` ⭐, `B` 👀, `C` 🧐, `D` 💤. Names are always unique inside the file.
 
 ## How scoring works
 
@@ -316,6 +333,46 @@ Keep the list small (roughly 5–20 wallets). Meridian checks each `type: "lp"`
 wallet against active positions and caches positions for 5 minutes, so a long list
 means more RPC and API work.
 
+## Importing into GMGN
+
+Every `scan` or `export` also writes `exports/gmgn-follow.json`. It uses the official
+GMGN batch-import shape: a JSON array of `{ address, name, emoji }` objects, with
+no wrapper and no metadata.
+
+1. Open <https://gmgn.ai/follow>.
+2. Click **Batch import/export** in the top-right corner.
+3. Paste the entire contents of `exports/gmgn-follow.json`.
+4. Confirm the preview and import.
+
+Notes:
+
+- GMGN accepts at most **2,000 addresses per import**. The exporter caps the file
+  at 2,000 even if you raise `export.maxWallets`.
+- This project never uploads anything to GMGN. Importing is always manual.
+- The wallet selection is the same as the Meridian export: recommended status,
+  `export.minScore`, sorted by score, capped by `export.maxWallets`.
+- `export.excludeExisting` only filters wallets already in Meridian. The GMGN file
+  is independent, so a wallet already in Meridian can still appear there.
+- Names and emojis are cosmetic labels for GMGN. They do not affect scoring.
+- GMGN importing a wallet does **not** enable copy trading. You still choose which
+  wallets to trade manually.
+
+To re-generate only the exports from the last scan:
+
+```bash
+node finder.js export
+```
+
+To disable the GMGN file while keeping the Meridian exports:
+
+```json
+{
+  "export": {
+    "gmgn": { "enabled": false }
+  }
+}
+```
+
 ## Configuration
 
 Start from `config.example.json`. The most useful fields:
@@ -357,7 +414,13 @@ Start from `config.example.json`. The most useful fields:
     "namePrefix": "auto",
     "type": "lp",
     "meridianSmartWalletsPath": "../meridian/smart-wallets.json",
-    "excludeExisting": true
+    "excludeExisting": true,
+    "gmgn": {
+      "enabled": true,
+      "maxWallets": 2000,        // GMGN hard limit
+      "namePrefix": "meteora",
+      "fileName": "gmgn-follow.json"
+    }
   },
   "hygiene": {
     "rpcUrl": "",                // empty = disabled
@@ -532,6 +595,9 @@ Known limitations:
   as a hint, not proof of common ownership.
 - Helius calls consume RPC credits. Results are cached for 24 hours by default;
   lower `hygiene.cacheTtlMinutes` if you need fresher balances and activity.
+- GMGN imports are limited to 2,000 addresses. The export file is generated
+  locally; this project has no GMGN API integration, no automatic upload, and no
+  copy-trading control.
 - Wallet history is not predictive. A wallet can change strategy or stop working
   at any time.
 
@@ -543,7 +609,7 @@ and, when enabled, the Telegram Bot API and Helius RPC read-only methods
 (`getBalance`, `getSignaturesForAddress`, `getTransaction`, `getAccountInfo`),
 plus local file writes for caches, logs, state, and exports. The only write
 outside its own directory is the opt-in `--merge` target, which always creates a
-backup first.
+backup first. GMGN import is manual; there is no GMGN API client.
 
 ## Development
 
@@ -563,7 +629,7 @@ src/wallets.js       portfolio/open, closed PnL, deep check
 src/hygiene.js       Helius RPC wallet age, balance, funder, clustering
 src/metrics.js       closed-position metrics and flags
 src/score.js         gates, weighted score, tiers
-src/output.js        tables, exports, Meridian merge
+src/output.js        tables, exports (Meridian + GMGN), Meridian merge
 src/state.js         watch-mode state
 src/telegram.js      Telegram API client and alert formatting
 src/bot.js           Telegram control bot (/scan, /stop, /status)
