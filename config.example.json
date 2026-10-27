@@ -83,7 +83,10 @@
   },
   "telegram": {
     "botToken": "",
-    "chatId": ""
+    "chatId": "",
+    "allowedChatIds": [],
+    "apiBase": "https://api.telegram.org",
+    "pollTimeoutSeconds": 30
   },
   "hygiene": {
     "checkWalletAge": false,

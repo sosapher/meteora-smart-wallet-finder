@@ -23,6 +23,7 @@ import {
 } from "./src/output.js";
 import { updateState } from "./src/state.js";
 import { formatCandidateAlert, sendTelegram } from "./src/telegram.js";
+import { runBot } from "./src/bot.js";
 import { mapLimit } from "./src/http.js";
 import { shortAddress } from "./src/util.js";
 import { isSolanaAddress } from "./src/lpers.js";
@@ -40,6 +41,7 @@ USAGE
   node finder.js pools [options]
   node finder.js export [options]
   node finder.js watch [options]
+  node finder.js bot [options]
   node finder.js config [options]
 
 COMMANDS
@@ -50,6 +52,7 @@ COMMANDS
   export            Re-write exports from the last scan. Use --merge to add
                     the results to Meridian's smart-wallets.json (backup made).
   watch             Run scan on an interval, alert on new recommended wallets.
+  bot               Start the Telegram control bot (/scan, /stop, /status).
   config            Print effective config with secrets masked.
 
 OPTIONS
@@ -77,6 +80,7 @@ EXAMPLES
   node finder.js export --merge
   node finder.js watch --interval 30
   node finder.js watch --once
+  node finder.js bot
 
 OUTPUT
   data/last-scan.json                  Full scan result
@@ -672,6 +676,9 @@ async function main() {
       break;
     case "watch":
       await runWatch(ctx);
+      break;
+    case "bot":
+      await runBot(ctx);
       break;
     case "config":
       await runConfig(ctx);

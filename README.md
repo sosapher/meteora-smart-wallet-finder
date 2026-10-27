@@ -7,7 +7,8 @@ exports them in a format that can be added manually to Meridian's
 `smart-wallets.json`.
 
 It never touches private keys, never signs transactions, and never modifies Meridian
-unless you explicitly run `export --merge`.
+unless you explicitly run `export --merge`. Scans can be triggered from the CLI or
+from a private Telegram control bot.
 
 ```
 Pool discovery ──> top LPers ──> candidate aggregation ──> deep check
@@ -79,6 +80,9 @@ node finder.js export --merge
 # Continuous watch mode
 node finder.js watch --interval 30
 
+# Telegram control bot: /scan, /stop, /status, /last
+node finder.js bot
+
 # Print effective config with secrets masked
 node finder.js config
 ```
@@ -107,6 +111,7 @@ Run `node finder.js --help` for every option.
 |---|---|
 | `data/last-scan.json` | Full scan result, including per-position detail |
 | `data/state.json` | Wallet scores across watch cycles |
+| `data/telegram-offset.json` | Telegram bot update offset (so commands are not replayed) |
 | `data/check-<wallet>.json` | Single-wallet report |
 | `exports/recommended.json` | Wrapper with metadata and criteria |
 | `exports/recommended.snippet.json` | Plain array ready to copy |
@@ -259,6 +264,8 @@ Environment overrides:
 | `MERIDIAN_SMART_WALLETS` | `export.meridianSmartWalletsPath` |
 | `TELEGRAM_BOT_TOKEN` | `telegram.botToken` |
 | `TELEGRAM_CHAT_ID` | `telegram.chatId` |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` (comma-separated) |
+| `TELEGRAM_API_BASE` | `telegram.apiBase` |
 | `RPC_URL` | `hygiene.rpcUrl` (reserved) |
 
 ## Watch mode and Telegram
@@ -282,7 +289,97 @@ pm2 save
 ```
 
 The included ecosystem file runs `finder.js watch` with the default 30-minute
-interval. It is independent of the existing `meridian` PM2 process.
+interval. It is independent of the existing `meridian` PM2 process. An optional
+Telegram bot app is included as a commented block in the same file; uncomment it
+after configuring `telegram.botToken` and `telegram.allowedChatIds`.
+
+## Telegram control bot
+
+You can start and stop scans from Telegram instead of SSH. The bot only listens
+to chat IDs you whitelist, only understands a fixed command set, and never runs
+arbitrary shell commands.
+
+### 1. Create the bot
+
+1. Open [@BotFather](https://t.me/BotFather) in Telegram.
+2. Send `/newbot`, choose a name and a username.
+3. Copy the token (looks like `123456789:AA...`).
+
+### 2. Get your numeric chat ID
+
+Message [@userinfobot](https://t.me/userinfobot) and copy your numeric `id`
+(for example `123456789`). Groups have negative IDs.
+
+### 3. Configure
+
+Edit `config.json` (gitignored):
+
+```json
+{
+  "telegram": {
+    "botToken": "123456789:AA...",
+    "chatId": "123456789",
+    "allowedChatIds": ["123456789"],
+    "apiBase": "https://api.telegram.org",
+    "pollTimeoutSeconds": 30
+  }
+}
+```
+
+- `allowedChatIds` is the control allowlist. Messages from other chats are
+  logged and ignored.
+- If `allowedChatIds` is empty, it falls back to `chatId`.
+- `chatId` is also the destination for watch-mode alerts.
+- `config.json` is gitignored. Never commit the token. If it leaks, revoke it
+  with `/revoke` in BotFather.
+
+### 4. Start the bot
+
+```bash
+node finder.js bot
+# or
+npm run bot
+```
+
+Then send `/start` to your bot in Telegram.
+
+### Commands
+
+| Command | Action |
+|---|---|
+| `/scan` | Run a scan with default settings |
+| `/scan --pools 5 --top 10` | Quick scan |
+| `/scan --min-score 80 --refresh` | Stricter scan, ignore cache |
+| `/stop` | Stop the running scan (SIGTERM, then SIGKILL after 10s) |
+| `/status` | Show whether a scan is running and the last result |
+| `/last` | Show top wallets from `data/last-scan.json` |
+| `/id` | Show the current chat ID |
+| `/help` | Show command help |
+
+Notes:
+
+- Only one scan can run at a time.
+- `/scan` runs in a child process, so stopping the bot or the scan is safe.
+- Unknown flags are rejected. `--merge` is intentionally **not** available from
+  Telegram; merging into Meridian stays a deliberate CLI action.
+- Commands sent while the bot is offline are skipped on restart.
+- The bot only controls scans. To stop the bot process itself, use PM2 or
+  `Ctrl+C`.
+
+### Run the bot under PM2
+
+```bash
+cd ~/meteora-smart-wallet-finder
+pm2 start finder.js --name swf-bot -- bot
+pm2 logs swf-bot
+pm2 save
+```
+
+Avoid running `watch` mode and the Telegram bot at the same time: both can start
+scans and write `data/last-scan.json`. Pick one control model:
+
+- **Bot control:** start scans manually from Telegram.
+- **Watch mode:** automatic scans every N minutes with alerts.
 
 ## API sources and limitations
 
@@ -315,7 +412,8 @@ Known limitations:
 ## Read-only guarantee
 
 This project contains no wallet keys, no signing code, and no transaction
-submission. It only performs HTTP GET requests plus local file writes for caches,
+submission. It performs HTTP requests to the Meteora/Agent Meridian data APIs
+and, when enabled, the Telegram Bot API, plus local file writes for caches,
 logs, state, and exports. The only write outside its own directory is the opt-in
 `--merge` target, which always creates a backup first.
 
@@ -338,7 +436,8 @@ src/metrics.js       closed-position metrics and flags
 src/score.js         gates, weighted score, tiers
 src/output.js        tables, exports, Meridian merge
 src/state.js         watch-mode state
-src/telegram.js      optional alerts
+src/telegram.js      Telegram API client and alert formatting
+src/bot.js           Telegram control bot (/scan, /stop, /status)
 test/                node:test unit tests
 ```
 

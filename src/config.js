@@ -91,6 +91,9 @@ export const DEFAULT_CONFIG = {
   telegram: {
     botToken: "",
     chatId: "",
+    allowedChatIds: [],
+    apiBase: "https://api.telegram.org",
+    pollTimeoutSeconds: 30,
   },
   hygiene: {
     checkWalletAge: false,
@@ -149,6 +152,15 @@ export function loadConfig(configPath = path.join(ROOT, "config.json")) {
   }
   if (process.env.TELEGRAM_CHAT_ID) {
     config.telegram.chatId = process.env.TELEGRAM_CHAT_ID;
+  }
+  if (process.env.TELEGRAM_ALLOWED_CHAT_IDS) {
+    config.telegram.allowedChatIds = process.env.TELEGRAM_ALLOWED_CHAT_IDS
+      .split(/[,\s]+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+  if (process.env.TELEGRAM_API_BASE) {
+    config.telegram.apiBase = process.env.TELEGRAM_API_BASE;
   }
   if (process.env.RPC_URL) {
     config.hygiene.rpcUrl = process.env.RPC_URL;

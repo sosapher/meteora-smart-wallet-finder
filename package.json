@@ -1,6 +1,6 @@
 {
   "name": "meteora-smart-wallet-finder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Find and score smart LP wallets on Meteora DLMM, with output compatible with Meridian smart-wallets.json",
@@ -12,6 +12,7 @@
     "start": "node finder.js scan",
     "scan": "node finder.js scan",
     "watch": "node finder.js watch",
+    "bot": "node finder.js bot",
     "pools": "node finder.js pools",
     "export": "node finder.js export",
     "test": "node --test",
