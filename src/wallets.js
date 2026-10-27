@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { fetchJson, mapLimit } from "./http.js";
+import { applyHygieneMetrics, fetchWalletHygiene, hygieneEnabled } from "./hygiene.js";
 import { computeMetrics } from "./metrics.js";
 import { isSolanaAddress } from "./lpers.js";
 import { parseTimestampMs, shortAddress } from "./util.js";
@@ -232,6 +233,16 @@ export async function deepCheckCandidate(
     Number(maxPools || config.discovery.maxPoolsPerWallet),
   );
 
+  const hygienePromise = hygieneEnabled(config)
+    ? fetchWalletHygiene(candidate.address, config, cache, logger, { refresh }).catch(
+        (error) => ({
+          enabled: true,
+          wallet: candidate.address,
+          error: error.message,
+        }),
+      )
+    : Promise.resolve(null);
+
   let open = { pools: [], totalPositions: 0, totalCount: 0 };
   try {
     open = await fetchPortfolioOpen(candidate.address, config, cache, logger, {
@@ -286,15 +297,19 @@ export async function deepCheckCandidate(
       position.depositUsd > 0,
   );
 
-  const metrics = computeMetrics(eligible, {
-    openPositions: open.totalPositions,
-    openPools: open.pools.length,
-    seenPoolCount: (candidate.pools || []).length,
-    now: Date.now(),
-    maxDaysSinceActive: config.metrics.maxDaysSinceActive,
-    partial,
-    totalRawPositions: normalized.length,
-  });
+  const metrics = applyHygieneMetrics(
+    computeMetrics(eligible, {
+      openPositions: open.totalPositions,
+      openPools: open.pools.length,
+      seenPoolCount: (candidate.pools || []).length,
+      now: Date.now(),
+      maxDaysSinceActive: config.metrics.maxDaysSinceActive,
+      partial,
+      totalRawPositions: normalized.length,
+    }),
+    await hygienePromise,
+    config,
+  );
 
   return {
     address: candidate.address,
@@ -313,6 +328,7 @@ export async function deepCheckCandidate(
     closedRequests,
     positions: eligible,
     metrics,
+    hygiene: metrics.hygiene || null,
     errors,
     partial,
   };

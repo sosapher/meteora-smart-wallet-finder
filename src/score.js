@@ -1,11 +1,11 @@
-import { clamp, recencyScoreDays, round } from "./util.js";
+import { clamp, recencyScoreDays, round, shortAddress } from "./util.js";
 
-const FLAG_LABELS = {
+export const FLAG_LABELS = {
   low_sample: "small sample",
   low_win_rate: "win rate below 45%",
   negative_net: "negative net PnL",
   low_fee_yield: "low fee yield",
-  stale: "inactive >60d",
+  stale: "inactive beyond recency limit",
   scalper: "avg hold <30m",
   passive: "avg hold >72h",
   ultra_tight: "ultra-tight range (<=5 bins)",
@@ -21,6 +21,13 @@ const FLAG_LABELS = {
   partial_data: "incomplete history",
   no_hold_data: "hold time unavailable",
   no_width_data: "range width unavailable",
+  new_wallet: "wallet younger than minimum age",
+  inactive_wallet: "no recent on-chain activity",
+  low_sol: "low SOL balance for fees",
+  shared_funder: "shares a funder with another candidate",
+  hygiene_unknown: "on-chain data unavailable",
+  no_onchain_history: "no on-chain history",
+  wallet_age_uncertain: "wallet age uncertain (history capped)",
 };
 
 export function tierForScore(score) {
@@ -80,6 +87,14 @@ function buildReasons(metrics) {
   }
   if (metrics.feeSharePct >= 70) reasons.push(`fee-driven ${metrics.feeSharePct}%`);
   if (metrics.poolCount >= 2) reasons.push(`${metrics.poolCount} pools`);
+  if (metrics.hygiene?.walletAgeDays != null) {
+    reasons.push(
+      `wallet age ${metrics.hygiene.walletAgeDays}${metrics.hygiene.ageCapped ? "+" : ""}d`,
+    );
+  }
+  if (metrics.hygiene?.funder) {
+    reasons.push(`funder ${shortAddress(metrics.hygiene.funder)}`);
+  }
   return reasons;
 }
 
@@ -131,6 +146,25 @@ export function scoreWallet(metrics, config, options = {}) {
       detail: `data confidence ${metrics.confidence}`,
     },
   ];
+
+  if (metrics.hygiene?.enabled && config.hygiene?.checkWalletAge) {
+    const minAge = Number(config.hygiene?.minWalletAgeDays ?? 30);
+    const hygiene = metrics.hygiene;
+    let ok = true;
+    let detail = `wallet age ${hygiene.walletAgeDays}d (min ${minAge}d)`;
+
+    if (hygiene.walletAgeDays == null) {
+      ok = !config.hygiene?.requireOnchainData;
+      detail = "wallet age unavailable from Helius RPC";
+    } else if (hygiene.ageCapped) {
+      ok = true;
+      detail = `wallet age at least ${hygiene.walletAgeDays}d (history capped)`;
+    } else {
+      ok = hygiene.walletAgeDays >= minAge;
+    }
+
+    gates.push({ code: "wallet_age", ok, detail });
+  }
 
   const qualified = gates.every((gate) => gate.ok);
   const rejectionReasons = gates.filter((gate) => !gate.ok).map((gate) => gate.detail);

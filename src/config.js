@@ -96,9 +96,22 @@ export const DEFAULT_CONFIG = {
     pollTimeoutSeconds: 30,
   },
   hygiene: {
-    checkWalletAge: false,
+    enabled: true,
     rpcUrl: "",
+    checkWalletAge: true,
+    minWalletAgeDays: 30,
+    maxDaysSinceSignature: 14,
+    minSolBalance: 0.02,
+    detectSharedFunder: true,
+    minSharedFunderWallets: 2,
+    ignoreFunders: [],
+    requireOnchainData: false,
+    cacheTtlMinutes: 1440,
     maxSignaturePages: 3,
+    signaturePageSize: 1000,
+    timeoutMs: 25000,
+    retries: 2,
+    minIntervalMs: 120,
   },
 };
 
@@ -164,6 +177,9 @@ export function loadConfig(configPath = path.join(ROOT, "config.json")) {
   }
   if (process.env.RPC_URL) {
     config.hygiene.rpcUrl = process.env.RPC_URL;
+  }
+  if (process.env.HELIUS_RPC_URL) {
+    config.hygiene.rpcUrl = process.env.HELIUS_RPC_URL;
   }
 
   config.paths.root = ROOT;

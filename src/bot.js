@@ -225,6 +225,15 @@ export function formatLastScan(lastScan, { limit = 8, header = true } = {}) {
       `   win ${metrics.winRatePct ?? 0}% · fee ${metrics.feeYieldPct ?? 0}% · ` +
         `ROI ${metrics.netRoiPct ?? 0}% · ${metrics.n ?? 0} closed`,
     );
+    if (metrics.hygiene?.walletAgeDays != null) {
+      lines.push(
+        `   on-chain age ${metrics.hygiene.walletAgeDays}d · ` +
+          `SOL ${metrics.hygiene.solBalance}` +
+          (metrics.hygiene.sharedFunderCount > 1
+            ? ` · shared funder x${metrics.hygiene.sharedFunderCount}`
+            : ""),
+      );
+    }
     if (score.status) {
       lines.push(`   status ${score.status}${score.qualified ? "" : " (gated)"}`);
     }

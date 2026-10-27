@@ -4,11 +4,16 @@
 
 This project does not contain private keys, signing code, or transaction
 submission. It performs HTTP requests to the Meteora/Agent Meridian data APIs
-and, when enabled, the Telegram Bot API, and writes local files for cache, logs,
-state, and exports.
+and, when enabled, the Telegram Bot API and the Helius RPC read-only methods
+(`getBalance`, `getSignaturesForAddress`, `getTransaction`, `getAccountInfo`),
+and writes local files for cache, logs, state, and exports.
 
 The Telegram control bot is restricted to an explicit allowlist of chat IDs and
 a fixed command set. It never executes arbitrary shell commands.
+
+The Helius RPC URL contains an API key. It is stored only in `config.json`
+(gitignored) or an environment variable, masked by `node finder.js config`, and
+redacted from RPC error messages.
 
 The only write outside this project's directory is the opt-in
 `export --merge` target, which always creates a timestamped backup first.

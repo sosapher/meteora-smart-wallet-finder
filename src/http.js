@@ -52,6 +52,7 @@ export async function fetchJson(url, options = {}) {
     minIntervalMs = 150,
     method = "GET",
     body,
+    displayUrl = url,
   } = options;
 
   const host = new URL(url).host;
@@ -85,11 +86,11 @@ export async function fetchJson(url, options = {}) {
       if (!response.ok) {
         const retryAfter = Number(response.headers.get("retry-after") || 0);
         throw new HttpError(
-          `HTTP ${response.status} for ${url}: ${text.slice(0, 300)}`,
+          `HTTP ${response.status} for ${displayUrl}: ${text.slice(0, 300)}`,
           {
             status: response.status,
             body: text,
-            url,
+            url: displayUrl,
             retryAfterMs: Number.isFinite(retryAfter) ? retryAfter * 1000 : 0,
           },
         );
@@ -99,10 +100,10 @@ export async function fetchJson(url, options = {}) {
       try {
         return JSON.parse(text);
       } catch {
-        throw new HttpError(`Invalid JSON from ${url}: ${text.slice(0, 200)}`, {
+        throw new HttpError(`Invalid JSON from ${displayUrl}: ${text.slice(0, 200)}`, {
           status: response.status,
           body: text,
-          url,
+          url: displayUrl,
         });
       }
     } catch (error) {
@@ -115,7 +116,7 @@ export async function fetchJson(url, options = {}) {
     }
   }
 
-  throw lastError || new Error(`Request failed: ${url}`);
+  throw lastError || new Error(`Request failed: ${displayUrl}`);
 }
 
 /**

@@ -181,6 +181,15 @@ export function formatCandidateAlert(candidates) {
       `hold ${metrics.avgHoldHours}h · range ${metrics.medianWidthBins} bins · ` +
         `${metrics.poolCount} pool(s)`,
     );
+    if (metrics.hygiene?.enabled && metrics.hygiene.walletAgeDays != null) {
+      lines.push(
+        `on-chain age ${metrics.hygiene.walletAgeDays}d · ` +
+          `SOL ${metrics.hygiene.solBalance}` +
+          (metrics.hygiene.sharedFunderCount > 1
+            ? ` · shared funder x${metrics.hygiene.sharedFunderCount}`
+            : ""),
+      );
+    }
     if (candidate.score.warnings.length > 0) {
       lines.push(`⚠️ ${escapeHtml(candidate.score.warnings.slice(0, 3).join(", "))}`);
     }

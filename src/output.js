@@ -152,6 +152,32 @@ export function printDetailedReport(result) {
     ["Active days", metrics.activeDays],
     ["Last activity", metrics.daysSinceActive == null ? "-" : `${metrics.daysSinceActive}d ago`],
     ["Confidence", metrics.confidence],
+    ...(metrics.hygiene?.enabled
+      ? [
+          [
+            "Wallet age",
+            metrics.hygiene.walletAgeDays == null
+              ? "-"
+              : `${metrics.hygiene.walletAgeDays}d${metrics.hygiene.ageCapped ? "+" : ""}`,
+          ],
+          [
+            "On-chain last",
+            metrics.hygiene.daysSinceLastSignature == null
+              ? "-"
+              : `${metrics.hygiene.daysSinceLastSignature}d ago`,
+          ],
+          [
+            "SOL balance",
+            metrics.hygiene.solBalance == null ? "-" : metrics.hygiene.solBalance,
+          ],
+          [
+            "Funder",
+            metrics.hygiene.funder
+              ? `${shortAddress(metrics.hygiene.funder)} (${metrics.hygiene.funderType})`
+              : "-",
+          ],
+        ]
+      : []),
   ];
   for (const [label, value] of metricRows) {
     console.log(`  ${String(label).padEnd(18)} ${value}`);
@@ -289,6 +315,12 @@ export function buildExportPayload(candidates, config, existing = null) {
       medianWidthBins: candidate.metrics.medianWidthBins,
       poolCount: candidate.metrics.poolCount,
       daysSinceActive: candidate.metrics.daysSinceActive,
+      walletAgeDays: candidate.metrics.hygiene?.walletAgeDays ?? null,
+      solBalance: candidate.metrics.hygiene?.solBalance ?? null,
+      funder: candidate.metrics.hygiene?.funder ?? null,
+      funderType: candidate.metrics.hygiene?.funderType ?? null,
+      sharedFunderCount:
+        candidate.metrics.hygiene?.sharedFunderCount ?? null,
       warnings: candidate.score.warnings,
     },
   }));
@@ -298,10 +330,11 @@ export function buildExportPayload(candidates, config, existing = null) {
 
 function markdownTable(candidates) {
   const header =
-    "| # | Wallet | Score | Tier | Closed | Win% | Fee yield | Net ROI | PF | Hold | Width | Pools | Last |\n" +
-    "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|";
+    "| # | Wallet | Score | Tier | Closed | Win% | Fee yield | Net ROI | PF | Hold | Width | Pools | Last | Age | SOL |\n" +
+    "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|";
   const rows = candidates.map((candidate, index) => {
     const metrics = candidate.metrics;
+    const hygiene = metrics.hygiene;
     return `| ${index + 1} | \`${candidate.address}\` | ${candidate.score.score} | ${
       candidate.score.tier
     } | ${metrics.n} | ${metrics.winRatePct}% | ${metrics.feeYieldPct}% | ${
@@ -310,7 +343,11 @@ function markdownTable(candidates) {
       metrics.medianWidthBins
     } | ${metrics.poolCount} | ${
       metrics.openPositions > 0 ? "now" : `${metrics.daysSinceActive ?? "-"}d`
-    } |`;
+    } | ${
+      hygiene?.walletAgeDays == null
+        ? "-"
+        : `${hygiene.walletAgeDays}${hygiene.ageCapped ? "+" : ""}d`
+    } | ${hygiene?.solBalance ?? "-"} |`;
   });
   return [header, ...rows].join("\n");
 }

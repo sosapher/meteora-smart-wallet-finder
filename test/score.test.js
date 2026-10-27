@@ -179,6 +179,77 @@ test("maps risk flags to readable warnings", () => {
   assert.ok(result.components.risk < 2);
 });
 
+test("wallet age gate rejects young wallets when Helius hygiene is enabled", () => {
+  const config = baseConfig({
+    hygiene: { checkWalletAge: true, minWalletAgeDays: 30 },
+  });
+  const metrics = {
+    ...baseMetrics(),
+    hygiene: { enabled: true, walletAgeDays: 10, ageCapped: false },
+  };
+  const result = scoreWallet(metrics, config);
+
+  assert.equal(result.qualified, false);
+  assert.ok(result.rejectionReasons.some((reason) => /wallet age 10d/.test(reason)));
+  assert.equal(
+    result.gates.find((gate) => gate.code === "wallet_age")?.ok,
+    false,
+  );
+});
+
+test("wallet age gate accepts capped and unknown ages by default", () => {
+  const config = baseConfig({
+    hygiene: { checkWalletAge: true, minWalletAgeDays: 30 },
+  });
+
+  const capped = scoreWallet(
+    {
+      ...baseMetrics(),
+      hygiene: { enabled: true, walletAgeDays: 5, ageCapped: true },
+    },
+    config,
+  );
+  assert.equal(capped.qualified, true);
+
+  const unknown = scoreWallet(
+    {
+      ...baseMetrics(),
+      hygiene: { enabled: true, walletAgeDays: null, ageCapped: false },
+    },
+    config,
+  );
+  assert.equal(unknown.qualified, true);
+
+  const strict = scoreWallet(
+    {
+      ...baseMetrics(),
+      hygiene: { enabled: true, walletAgeDays: null, ageCapped: false },
+    },
+    baseConfig({
+      hygiene: {
+        checkWalletAge: true,
+        requireOnchainData: true,
+        minWalletAgeDays: 30,
+      },
+    }),
+  );
+  assert.equal(strict.qualified, false);
+});
+
+test("wallet age gate is skipped when hygiene is off", () => {
+  const config = baseConfig({
+    hygiene: { checkWalletAge: false, minWalletAgeDays: 30 },
+  });
+  const result = scoreWallet(
+    {
+      ...baseMetrics(),
+      hygiene: { enabled: true, walletAgeDays: 5, ageCapped: false },
+    },
+    config,
+  );
+  assert.equal(result.qualified, true);
+});
+
 test("scores end-to-end from closed position history", () => {
   const positions = Array.from({ length: 20 }, (_, index) => {
     const closedAt = NOW - (20 - index) * 3 * HOUR;

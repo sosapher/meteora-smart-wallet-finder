@@ -8,7 +8,8 @@ exports them in a format that can be added manually to Meridian's
 
 It never touches private keys, never signs transactions, and never modifies Meridian
 unless you explicitly run `export --merge`. Scans can be triggered from the CLI or
-from a private Telegram control bot.
+from a private Telegram control bot. An optional Helius RPC endpoint adds wallet
+age, SOL balance, and funding-source checks.
 
 ```
 Pool discovery ──> top LPers ──> candidate aggregation ──> deep check
@@ -24,6 +25,7 @@ Pool discovery ──> top LPers ──> candidate aggregation ──> deep chec
 
 - Node.js 18 or newer
 - Network access to Meteora and Agent Meridian APIs
+- Optional: a Helius RPC endpoint for on-chain wallet checks
 - No npm dependencies
 
 ## Install
@@ -82,6 +84,9 @@ node finder.js watch --interval 30
 
 # Telegram control bot: /scan, /stop, /status, /last
 node finder.js bot
+
+# On-chain hygiene for one wallet (requires Helius RPC)
+node finder.js hygiene 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK
 
 # Print effective config with secrets masked
 node finder.js config
@@ -183,6 +188,108 @@ Agent Meridian's `/top-lp` aggregate fields (`winRatePct`, `totalLp`,
 Meteora's closed-position PnL endpoint. Metrics come from actual positions:
 deposits, fees, PnL, hold time, bin width, and pool.
 
+## On-chain hygiene with Helius RPC
+
+This check is optional. Without `hygiene.rpcUrl`, scans behave exactly as before:
+no RPC calls, no new gates, no extra credits.
+
+### Setup
+
+1. Create a free key at [dashboard.helius.dev](https://dashboard.helius.dev).
+2. Set the endpoint in `config.json`:
+
+```json
+{
+  "hygiene": {
+    "enabled": true,
+    "rpcUrl": "https://mainnet.helius-rpc.com/?api-key=YOUR_KEY",
+    "checkWalletAge": true,
+    "minWalletAgeDays": 30,
+    "maxDaysSinceSignature": 14,
+    "minSolBalance": 0.02,
+    "detectSharedFunder": true,
+    "minSharedFunderWallets": 2,
+    "ignoreFunders": [],
+    "requireOnchainData": false,
+    "cacheTtlMinutes": 1440,
+    "maxSignaturePages": 3,
+    "signaturePageSize": 1000
+  }
+}
+```
+
+Or use an environment variable:
+
+```bash
+export HELIUS_RPC_URL="https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"
+```
+
+`config.json` is gitignored. The URL contains your API key, so never commit it.
+`node finder.js config` masks it, and RPC errors are logged without the URL.
+
+### What it checks
+
+| Data | RPC method | Used for |
+|---|---|---|
+| SOL balance | `getBalance` | Warn on wallets too low on SOL for fees |
+| Transaction history | `getSignaturesForAddress` | Wallet age, last activity, history depth |
+| Earliest transaction | `getTransaction` | Funding source |
+| Funder account | `getAccountInfo` | Distinguish a wallet from a program |
+
+Results are cached for `hygiene.cacheTtlMinutes` (24 hours by default) so repeat
+scans do not burn Helius credits.
+
+### Gates and warnings
+
+When `checkWalletAge` is on, a wallet must pass one more gate:
+
+| Gate | Default | Config |
+|---|---:|---|
+| Wallet age | >= 30 days | `hygiene.minWalletAgeDays` |
+
+Behavior:
+
+- If history is capped by `maxSignaturePages`, age is a lower bound and the gate
+  passes. The CLI shows `(at least)`.
+- If age cannot be read at all, the gate passes unless
+  `hygiene.requireOnchainData` is `true`.
+- Shared-funder detection does not affect the score. It only adds a warning.
+
+New warning flags:
+
+| Flag | Meaning |
+|---|---|
+| `new_wallet` | Wallet is younger than `minWalletAgeDays` |
+| `inactive_wallet` | No on-chain signature for `maxDaysSinceSignature` days |
+| `low_sol` | SOL balance below `minSolBalance` |
+| `shared_funder` | Another scanned candidate has the same funder |
+| `no_onchain_history` | Wallet has no signatures at all |
+| `wallet_age_uncertain` | History capped below the minimum age; true age is unknown |
+| `hygiene_unknown` | RPC data unavailable for this wallet |
+
+`shared_funder` is a heuristic. Exchanges and launchpads can fund many unrelated
+wallets. Add known addresses to `hygiene.ignoreFunders` if they cause noise.
+
+### Check one wallet
+
+```bash
+node finder.js hygiene <wallet>
+node finder.js hygiene <wallet> --json
+node finder.js hygiene <wallet> --refresh
+```
+
+Example output:
+
+```
+Wallet      : 7Weig...
+Wallet age  : 142.3d
+First seen  : 2026-06-07T...
+Last seen   : 2026-10-26T... (1.2d ago)
+SOL balance : 2.5
+Signatures  : 1000 (1 page(s), partial)
+Funder      : 28F7... (wallet)
+```
+
 ## Adding wallets to Meridian
 
 Meridian reads `smart-wallets.json` on every tool call, so **no restart is
@@ -251,6 +358,15 @@ Start from `config.example.json`. The most useful fields:
     "type": "lp",
     "meridianSmartWalletsPath": "../meridian/smart-wallets.json",
     "excludeExisting": true
+  },
+  "hygiene": {
+    "rpcUrl": "",                // empty = disabled
+    "checkWalletAge": true,
+    "minWalletAgeDays": 30,
+    "maxDaysSinceSignature": 14,
+    "minSolBalance": 0.02,
+    "detectSharedFunder": true,
+    "cacheTtlMinutes": 1440
   }
 }
 ```
@@ -266,7 +382,8 @@ Environment overrides:
 | `TELEGRAM_CHAT_ID` | `telegram.chatId` |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` (comma-separated) |
 | `TELEGRAM_API_BASE` | `telegram.apiBase` |
-| `RPC_URL` | `hygiene.rpcUrl` (reserved) |
+| `HELIUS_RPC_URL` | `hygiene.rpcUrl` (Helius endpoint with API key) |
+| `RPC_URL` | `hygiene.rpcUrl` fallback |
 
 ## Watch mode and Telegram
 
@@ -390,6 +507,7 @@ scans and write `data/last-scan.json`. Pick one control model:
 | `api.agentmeridian.xyz/api/study-top-lp/<pool>` | Fallback when `/top-lp` fails |
 | `dlmm.datapi.meteora.ag/portfolio/open?user=<wallet>` | Open positions |
 | `dlmm.datapi.meteora.ag/positions/<pool>/pnl?user=<wallet>&status=closed` | Closed-position history |
+| Helius RPC (`hygiene.rpcUrl`) | Wallet age, SOL balance, funding source, shared funders |
 
 Known limitations:
 
@@ -406,6 +524,14 @@ Known limitations:
   of 50) per pool. Wallets with long histories may be truncated; the
   `partial_data` flag surfaces this.
 - Only positions above `minPositionDepositUsd` are counted.
+- Helius wallet age uses at most `hygiene.maxSignaturePages` pages of 1,000
+  signatures. Very old wallets are reported as "at least X days"; the age gate
+  still passes because the true age can only be older.
+- Funding source comes from the earliest successful transaction. Exchange and
+  launchpad hot wallets will look like shared funders, so treat `shared_funder`
+  as a hint, not proof of common ownership.
+- Helius calls consume RPC credits. Results are cached for 24 hours by default;
+  lower `hygiene.cacheTtlMinutes` if you need fresher balances and activity.
 - Wallet history is not predictive. A wallet can change strategy or stop working
   at any time.
 
@@ -413,9 +539,11 @@ Known limitations:
 
 This project contains no wallet keys, no signing code, and no transaction
 submission. It performs HTTP requests to the Meteora/Agent Meridian data APIs
-and, when enabled, the Telegram Bot API, plus local file writes for caches,
-logs, state, and exports. The only write outside its own directory is the opt-in
-`--merge` target, which always creates a backup first.
+and, when enabled, the Telegram Bot API and Helius RPC read-only methods
+(`getBalance`, `getSignaturesForAddress`, `getTransaction`, `getAccountInfo`),
+plus local file writes for caches, logs, state, and exports. The only write
+outside its own directory is the opt-in `--merge` target, which always creates a
+backup first.
 
 ## Development
 
@@ -432,6 +560,7 @@ src/config.js        defaults, merge, env overrides, validation
 src/pools.js         discovery, filtering, pool scoring
 src/lpers.js         top-LPer fetching, fallback, aggregation
 src/wallets.js       portfolio/open, closed PnL, deep check
+src/hygiene.js       Helius RPC wallet age, balance, funder, clustering
 src/metrics.js       closed-position metrics and flags
 src/score.js         gates, weighted score, tiers
 src/output.js        tables, exports, Meridian merge

@@ -24,6 +24,12 @@ import {
 import { updateState } from "./src/state.js";
 import { formatCandidateAlert, sendTelegram } from "./src/telegram.js";
 import { runBot } from "./src/bot.js";
+import {
+  annotateSharedFunders,
+  fetchWalletHygiene,
+  hygieneEnabled,
+  printHygieneReport,
+} from "./src/hygiene.js";
 import { mapLimit } from "./src/http.js";
 import { shortAddress } from "./src/util.js";
 import { isSolanaAddress } from "./src/lpers.js";
@@ -42,6 +48,7 @@ USAGE
   node finder.js export [options]
   node finder.js watch [options]
   node finder.js bot [options]
+  node finder.js hygiene <wallet> [options]
   node finder.js config [options]
 
 COMMANDS
@@ -53,6 +60,8 @@ COMMANDS
                     the results to Meridian's smart-wallets.json (backup made).
   watch             Run scan on an interval, alert on new recommended wallets.
   bot               Start the Telegram control bot (/scan, /stop, /status).
+  hygiene <wallet>  Check wallet age, SOL balance, on-chain activity, and
+                    funding source using Helius RPC.
   config            Print effective config with secrets masked.
 
 OPTIONS
@@ -81,6 +90,7 @@ EXAMPLES
   node finder.js watch --interval 30
   node finder.js watch --once
   node finder.js bot
+  node finder.js hygiene 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK
 
 OUTPUT
   data/last-scan.json                  Full scan result
@@ -349,6 +359,10 @@ async function runScan(ctx, { watchMode = false } = {}) {
     return (b.metrics?.n || 0) - (a.metrics?.n || 0);
   });
 
+  if (hygieneEnabled(scanConfig)) {
+    annotateSharedFunders(scored, scanConfig);
+  }
+
   const recommended = scored.filter(
     (candidate) => candidate.score?.status === "recommended",
   ).length;
@@ -525,6 +539,30 @@ async function runCheck(ctx, wallet) {
   return result;
 }
 
+async function runHygiene(ctx, wallet) {
+  const { config, args, logger, cache } = ctx;
+  if (!isSolanaAddress(wallet)) {
+    throw new Error(`Invalid Solana wallet address: ${wallet}`);
+  }
+  if (!hygieneEnabled(config)) {
+    throw new Error(
+      "Helius RPC is not configured. Set hygiene.rpcUrl in config.json or " +
+        "export HELIUS_RPC_URL.",
+    );
+  }
+
+  const result = await fetchWalletHygiene(wallet, config, cache, logger, {
+    refresh: boolArg(args.refresh),
+  });
+
+  if (boolArg(args.json)) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    printHygieneReport(wallet, result);
+  }
+  return result;
+}
+
 async function runPools(ctx) {
   const { config, args, logger, cache } = ctx;
   const refresh = boolArg(args.refresh);
@@ -671,6 +709,12 @@ async function main() {
     case "pools":
       await runPools(ctx);
       break;
+    case "hygiene": {
+      const wallet = args._[1];
+      if (!wallet) throw new Error("Usage: node finder.js hygiene <wallet>");
+      await runHygiene(ctx, wallet);
+      break;
+    }
     case "export":
       await runExport(ctx);
       break;
