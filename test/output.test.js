@@ -7,11 +7,13 @@ import { DEFAULT_CONFIG, deepMerge } from "../src/config.js";
 import {
   buildExportPayload,
   buildGmgnPayload,
+  buildSmartWalletText,
   GMGN_MAX_WALLETS,
   mergeIntoMeridian,
   selectExportCandidates,
   selectGmgnCandidates,
   writeExports,
+  writeSmartWalletText,
 } from "../src/output.js";
 
 function baseConfig(overrides = {}) {
@@ -63,6 +65,62 @@ test("selects only recommended candidates above the score threshold", () => {
   );
 
   assert.deepEqual(selected.map((entry) => entry.address), [WALLET_A]);
+});
+
+test("builds a ranked plain-text smart wallet export", () => {
+  const config = baseConfig({ export: { minScore: 75, maxWallets: 10 } });
+  const text = buildSmartWalletText(
+    [
+      candidate(WALLET_A, 86),
+      candidate(WALLET_B, 92),
+      candidate(WALLET_C, 76, "watch"),
+    ],
+    config,
+    { generatedAt: "2026-10-28T00:00:00.000Z", source: "unit-test" },
+  );
+
+  assert.match(text, /^# Meteora Smart Wallets/);
+  assert.match(text, /# Count: 2/);
+  assert.match(text, /Sorted by score, best first/);
+  assert.ok(text.includes(WALLET_A));
+  assert.ok(text.includes(WALLET_B));
+  assert.ok(!text.includes(WALLET_C));
+  assert.ok(
+    text.indexOf(WALLET_B) < text.indexOf(WALLET_A),
+    "higher score should be listed first",
+  );
+  assert.match(text, /Read-only research, not financial advice/);
+});
+
+test("handles an empty smart wallet text export", () => {
+  const config = baseConfig({ export: { minScore: 90 } });
+  const text = buildSmartWalletText([candidate(WALLET_A, 80)], config);
+
+  assert.match(text, /# Count: 0/);
+  assert.match(text, /No smart wallets matched/);
+  assert.ok(!text.includes(WALLET_A));
+});
+
+test("writes the ranked smart wallet text file", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
+    export: { minScore: 75, maxWallets: 10 },
+  });
+
+  const result = writeSmartWalletText(
+    [candidate(WALLET_A, 80), candidate(WALLET_B, 90)],
+    config,
+  );
+
+  assert.equal(result.count, 2);
+  assert.ok(fs.existsSync(result.path));
+  assert.match(path.basename(result.path), /\.txt$/);
+  assert.equal(fs.readFileSync(result.path, "utf8"), result.text);
+  assert.ok(result.text.indexOf(WALLET_B) < result.text.indexOf(WALLET_A));
 });
 
 test("builds Meridian-compatible entries with metadata kept separate", () => {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ROOT } from "./config.js";
+import { writeSmartWalletText } from "./output.js";
 import {
   escapeHtml,
   getTelegramMe,
@@ -37,6 +38,7 @@ export function helpText() {
     "/export — send the latest GMGN file",
     "/export new — send only new GMGN wallets",
     "/export full — send the full GMGN list",
+    "/exporttxt — send smart wallets as a ranked .txt file",
     "/id — show this chat ID",
     "/help — show this message",
     "",
@@ -288,6 +290,9 @@ export function commandPlan({ text, state, config, lastScan = null }) {
       }
       return { action: { type: "export", mode } };
     }
+
+    case "exporttxt":
+      return { action: { type: "exporttxt" } };
 
     case "scan": {
       if (state.child) {
@@ -571,6 +576,54 @@ async function handleExport({ chatId, mode, config, logger }) {
   }
 }
 
+async function handleExportTxt({ chatId, config, logger }) {
+  const lastScan = readLastScan(config);
+  if (!lastScan) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ No scan result yet. Run /scan first.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const candidates = Array.isArray(lastScan.candidates)
+    ? lastScan.candidates
+    : [];
+  const result = writeSmartWalletText(candidates, config, {
+    source: "data/last-scan.json",
+  });
+
+  if (result.count === 0) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ No smart wallets matched the export criteria. " +
+        "Run /scan with a lower --min-score or adjust export.minScore.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const caption =
+    `📄 Smart wallets: ${result.count} wallet(s)\n` +
+    "Sorted by score, best first.";
+  const ok = await sendTelegramDocument(chatId, result.path, {
+    caption,
+    config,
+    logger,
+  });
+  if (!ok) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ Failed to send the smart wallet text file. Check the bot logs.",
+      config,
+      logger,
+    );
+  }
+}
+
 export async function runBot(ctx) {
   const { config, configPath, logger } = ctx;
   const token = config.telegram?.botToken;
@@ -688,6 +741,11 @@ export async function runBot(ctx) {
           config,
           logger,
         });
+        continue;
+      }
+
+      if (plan.action?.type === "exporttxt") {
+        await handleExportTxt({ chatId, config, logger });
         continue;
       }
 

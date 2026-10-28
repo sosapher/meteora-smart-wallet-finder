@@ -135,6 +135,16 @@ test("export command plans GMGN document delivery", () => {
   assert.equal(invalid.action, undefined);
 });
 
+test("exporttxt command plans a ranked text document", () => {
+  const plan = commandPlan({
+    text: "/exporttxt",
+    state: createBotState(),
+    config: CONFIG,
+  });
+  assert.equal(plan.action.type, "exporttxt");
+  assert.equal(plan.reply, undefined);
+});
+
 test("formatStatus reports idle and running states", () => {
   const idle = formatStatus(createBotState(), null);
   assert.match(idle, /idle/);

@@ -589,6 +589,7 @@ Then send `/start` to your bot in Telegram.
 | `/export` | Send the latest GMGN file (`gmgn-new.json` if non-empty, else `gmgn-follow.json`) |
 | `/export new` | Send only the new GMGN wallets |
 | `/export full` | Send the full GMGN list |
+| `/exporttxt` | Send smart wallets as a ranked `.txt` file (best first) |
 | `/id` | Show the current chat ID |
 | `/help` | Show command help |
 
@@ -615,6 +616,29 @@ phone without SSH:
 `/export` picks `exports/gmgn-new.json` when it contains wallets, otherwise it
 falls back to `exports/gmgn-follow.json`. Use `/export new` or `/export full` to
 force one file. If no export exists yet, the bot asks you to run `/scan` first.
+
+### Send smart wallets as text
+
+`/exporttxt` builds `exports/smart-wallets.txt` from the last scan and sends it
+as a document. The list uses the same selection as the Meridian export
+(`export.minScore` and `export.maxWallets`) and is sorted by score, best first:
+
+```text
+# Meteora Smart Wallets
+# Generated: 2026-10-28T02:50:00.000Z
+# Source: data/last-scan.json
+# Sorted by score, best first
+# Criteria: score >= 75, max 10 wallets
+# Count: 2
+
+  #  Address                                       Score  Tier    Win%   Fee%   ROI%  Closed  Pools    Last
+  -  --------------------------------------------  ------  ----  ------  -----  -----  ------  -----  ------
+  1  B9U42uELGHcqvGvnqtJxYRGEsrJ7cBJV4MAXbNpSDJLU    88.3  S       70.3   20.6   17.0      37      3     now
+  2  7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK    86.0  S       78.0    6.0   12.0      12      2      0d
+```
+
+The file is plain text, so it can be copied into notes or another tool. It is
+read-only research, not financial advice.
 
 ### Run the bot under PM2
 

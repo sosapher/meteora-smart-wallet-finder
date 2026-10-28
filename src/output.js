@@ -542,6 +542,114 @@ function markdownTable(candidates) {
   return [header, ...rows].join("\n");
 }
 
+export const SMART_WALLET_TEXT_FILE = "smart-wallets.txt";
+
+function textCell(value, width, align = "left") {
+  const text = truncate(value, width);
+  return align === "right" ? text.padStart(width) : text.padEnd(width);
+}
+
+/**
+ * Build a ranked plain-text list of the same wallets written to the Meridian
+ * export. The best score comes first so the file is useful on its own.
+ */
+export function buildSmartWalletText(
+  candidates,
+  config,
+  { generatedAt = new Date().toISOString(), source = "last scan" } = {},
+) {
+  const selected = selectExportCandidates(candidates || [], config);
+  const minScore = Number(
+    config.export?.minScore || config.score?.minScore || 0,
+  );
+  const maxWallets = Math.max(1, Number(config.export?.maxWallets || 10));
+  const lines = [
+    "# Meteora Smart Wallets",
+    `# Generated: ${generatedAt}`,
+    `# Source: ${source}`,
+    "# Sorted by score, best first",
+    `# Criteria: score >= ${minScore}, max ${maxWallets} wallets`,
+    `# Count: ${selected.length}`,
+    "",
+  ];
+
+  if (selected.length === 0) {
+    lines.push("No smart wallets matched the export criteria.");
+    return `${lines.join("\n")}\n`;
+  }
+
+  const columns = [
+    { name: "#", width: 3, align: "right" },
+    { name: "Address", width: 44, align: "left" },
+    { name: "Score", width: 6, align: "right" },
+    { name: "Tier", width: 4, align: "left" },
+    { name: "Win%", width: 6, align: "right" },
+    { name: "Fee%", width: 6, align: "right" },
+    { name: "ROI%", width: 6, align: "right" },
+    { name: "Closed", width: 6, align: "right" },
+    { name: "Pools", width: 5, align: "right" },
+    { name: "Last", width: 6, align: "right" },
+  ];
+
+  const format = (cells) =>
+    cells
+      .map((cell, index) =>
+        textCell(cell, columns[index].width, columns[index].align),
+      )
+      .join("  ")
+      .trimEnd();
+
+  lines.push(format(columns.map((column) => column.name)));
+  lines.push(
+    columns.map((column) => "-".repeat(column.width)).join("  "),
+  );
+
+  selected.forEach((candidate, index) => {
+    const metrics = candidate.metrics || {};
+    const score = candidate.score || {};
+    const lastSeenText =
+      metrics.openPositions > 0
+        ? "now"
+        : Number.isFinite(metrics.daysSinceActive)
+          ? `${round(metrics.daysSinceActive, 0)}d`
+          : "-";
+    lines.push(
+      format([
+        String(index + 1),
+        String(candidate.address || ""),
+        Number.isFinite(score.score) ? String(round(score.score, 1)) : "-",
+        String(score.tier || "-"),
+        pct(metrics.winRatePct),
+        pct(metrics.feeYieldPct),
+        pct(metrics.netRoiPct),
+        Number.isFinite(metrics.n) ? String(metrics.n) : "-",
+        Number.isFinite(metrics.poolCount) ? String(metrics.poolCount) : "-",
+        lastSeenText,
+      ]),
+    );
+  });
+
+  lines.push("");
+  lines.push("# Read-only research, not financial advice.");
+  return `${lines.join("\n")}\n`;
+}
+
+export function smartWalletTextPath(config) {
+  return path.join(config.paths.exportDir, SMART_WALLET_TEXT_FILE);
+}
+
+export function writeSmartWalletText(candidates, config, options = {}) {
+  const text = buildSmartWalletText(candidates, config, options);
+  const file = smartWalletTextPath(config);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text, "utf8");
+  return {
+    path: file,
+    text,
+    count: selectExportCandidates(candidates || [], config).length,
+  };
+}
+
 export function writeExports(
   scanResult,
   config,
