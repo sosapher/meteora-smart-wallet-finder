@@ -145,6 +145,16 @@ test("exporttxt command plans a ranked text document", () => {
   assert.equal(plan.reply, undefined);
 });
 
+test("exporttxtfull command plans the unfiltered text document", () => {
+  const plan = commandPlan({
+    text: "/exporttxtfull",
+    state: createBotState(),
+    config: CONFIG,
+  });
+  assert.equal(plan.action.type, "exporttxtfull");
+  assert.equal(plan.reply, undefined);
+});
+
 test("formatStatus reports idle and running states", () => {
   const idle = formatStatus(createBotState(), null);
   assert.match(idle, /idle/);

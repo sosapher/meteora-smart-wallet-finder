@@ -650,6 +650,118 @@ export function writeSmartWalletText(candidates, config, options = {}) {
   };
 }
 
+export const ALL_WALLETS_TEXT_FILE = "all-wallets.txt";
+
+const TIER_ORDER = { S: 0, A: 1, B: 2, C: 3, D: 4 };
+
+function tierRank(tier) {
+  const key = String(tier || "").toUpperCase();
+  return Object.hasOwn(TIER_ORDER, key) ? TIER_ORDER[key] : 99;
+}
+
+function numericScore(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : -Infinity;
+}
+
+function isoDate(value) {
+  const text = String(value || "");
+  return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : "-";
+}
+
+/**
+ * Build a plain-text dump of every wallet ever stored in the scan state.
+ * Unlike the curated export, nothing is filtered: recommended, watch, and
+ * rejected wallets all appear, ranked by tier (S first) then score.
+ */
+export function buildAllWalletsText(
+  wallets,
+  { generatedAt = new Date().toISOString(), source = "data/state.json", scanAt = null } = {},
+) {
+  const sorted = [...(wallets || [])].sort((a, b) => {
+    const tier = tierRank(a.lastTier) - tierRank(b.lastTier);
+    if (tier !== 0) return tier;
+    const score = numericScore(b.lastScore) - numericScore(a.lastScore);
+    if (score !== 0) return score;
+    const best = numericScore(b.bestScore) - numericScore(a.bestScore);
+    if (best !== 0) return best;
+    return String(a.address || "").localeCompare(String(b.address || ""));
+  });
+
+  const lines = [
+    "# Meteora All Wallets",
+    `# Generated: ${generatedAt}`,
+    `# Source: ${source}`,
+    `# Last scan: ${scanAt || "-"}`,
+    "# Sorted by tier (S best), then score",
+    `# Wallets: ${sorted.length}`,
+    "# Status: recommended = passed all gates; watch = promising but incomplete; rejected = failed a gate",
+    "",
+  ];
+
+  if (sorted.length === 0) {
+    lines.push("No wallets have been recorded yet. Run /scan first.");
+    return `${lines.join("\n")}\n`;
+  }
+
+  const columns = [
+    { name: "#", width: 4, align: "right" },
+    { name: "Address", width: 44, align: "left" },
+    { name: "Tier", width: 4, align: "left" },
+    { name: "Score", width: 6, align: "right" },
+    { name: "Best", width: 6, align: "right" },
+    { name: "Status", width: 11, align: "left" },
+    { name: "First seen", width: 10, align: "left" },
+    { name: "Last seen", width: 10, align: "left" },
+  ];
+
+  const format = (cells) =>
+    cells
+      .map((cell, index) =>
+        textCell(cell, columns[index].width, columns[index].align),
+      )
+      .join("  ")
+      .trimEnd();
+
+  lines.push(format(columns.map((column) => column.name)));
+  lines.push(columns.map((column) => "-".repeat(column.width)).join("  "));
+
+  sorted.forEach((wallet, index) => {
+    lines.push(
+      format([
+        String(index + 1),
+        String(wallet.address || ""),
+        String(wallet.lastTier || "-"),
+        Number.isFinite(Number(wallet.lastScore))
+          ? String(round(Number(wallet.lastScore), 1))
+          : "-",
+        Number.isFinite(Number(wallet.bestScore))
+          ? String(round(Number(wallet.bestScore), 1))
+          : "-",
+        String(wallet.status || "unknown"),
+        isoDate(wallet.firstSeen),
+        isoDate(wallet.lastSeen),
+      ]),
+    );
+  });
+
+  lines.push("");
+  lines.push("# Read-only research, not financial advice.");
+  return `${lines.join("\n")}\n`;
+}
+
+export function allWalletsTextPath(config) {
+  return path.join(config.paths.exportDir, ALL_WALLETS_TEXT_FILE);
+}
+
+export function writeAllWalletsText(wallets, config, options = {}) {
+  const text = buildAllWalletsText(wallets, options);
+  const file = allWalletsTextPath(config);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text, "utf8");
+  return { path: file, text, count: (wallets || []).length };
+}
+
 export function writeExports(
   scanResult,
   config,

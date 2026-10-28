@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { DEFAULT_CONFIG, deepMerge } from "../src/config.js";
 import {
+  buildAllWalletsText,
   buildExportPayload,
   buildGmgnPayload,
   buildSmartWalletText,
@@ -12,6 +13,7 @@ import {
   mergeIntoMeridian,
   selectExportCandidates,
   selectGmgnCandidates,
+  writeAllWalletsText,
   writeExports,
   writeSmartWalletText,
 } from "../src/output.js";
@@ -121,6 +123,93 @@ test("writes the ranked smart wallet text file", () => {
   assert.match(path.basename(result.path), /\.txt$/);
   assert.equal(fs.readFileSync(result.path, "utf8"), result.text);
   assert.ok(result.text.indexOf(WALLET_B) < result.text.indexOf(WALLET_A));
+});
+
+test("builds an unfiltered all-wallets export ranked by tier", () => {
+  const wallets = [
+    {
+      address: WALLET_C,
+      lastTier: "B",
+      lastScore: 80,
+      bestScore: 90,
+      status: "watch",
+      pools: [{ address: "p1" }, { address: "p2" }],
+      lastSeen: "2026-10-28T02:00:00.000Z",
+    },
+    {
+      address: WALLET_A,
+      lastTier: "S",
+      lastScore: 70,
+      bestScore: 75,
+      status: "recommended",
+      pools: [{ address: "p1" }],
+      lastSeen: "2026-10-28T02:00:00.000Z",
+    },
+    {
+      address: WALLET_B,
+      lastTier: "S",
+      lastScore: 88,
+      bestScore: 88,
+      status: "recommended",
+      pools: [{ address: "p1" }],
+      lastSeen: "2026-10-28T02:00:00.000Z",
+    },
+    {
+      address: "D".repeat(44),
+      lastTier: "D",
+      lastScore: 40,
+      bestScore: 45,
+      status: "rejected",
+      pools: [],
+      lastSeen: "2026-10-27T02:00:00.000Z",
+    },
+  ];
+
+  const text = buildAllWalletsText(wallets, {
+    generatedAt: "2026-10-28T03:00:00.000Z",
+    source: "unit-test",
+    scanAt: "2026-10-28T02:37:45.620Z",
+  });
+
+  assert.match(text, /^# Meteora All Wallets/);
+  assert.match(text, /# Wallets: 4/);
+  assert.match(text, /Sorted by tier \(S best\), then score/);
+  assert.ok(text.includes("rejected"));
+  assert.ok(text.includes(WALLET_A));
+  assert.ok(text.includes(WALLET_C));
+
+  const order = [WALLET_B, WALLET_A, WALLET_C, "D".repeat(44)].map((address) =>
+    text.indexOf(address),
+  );
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+});
+
+test("writes the unfiltered all-wallets text file", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
+  });
+  const wallets = [
+    {
+      address: WALLET_A,
+      lastTier: "S",
+      lastScore: 88,
+      bestScore: 90,
+      status: "recommended",
+      pools: [],
+      lastSeen: "2026-10-28T02:00:00.000Z",
+    },
+  ];
+
+  const result = writeAllWalletsText(wallets, config, { source: "unit-test" });
+
+  assert.equal(result.count, 1);
+  assert.equal(path.basename(result.path), "all-wallets.txt");
+  assert.ok(fs.existsSync(result.path));
+  assert.equal(fs.readFileSync(result.path, "utf8"), result.text);
 });
 
 test("builds Meridian-compatible entries with metadata kept separate", () => {

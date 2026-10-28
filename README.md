@@ -590,6 +590,7 @@ Then send `/start` to your bot in Telegram.
 | `/export new` | Send only the new GMGN wallets |
 | `/export full` | Send the full GMGN list |
 | `/exporttxt` | Send smart wallets as a ranked `.txt` file (best first) |
+| `/exporttxtfull` | Send every wallet ever recorded, ranked by tier |
 | `/id` | Show the current chat ID |
 | `/help` | Show command help |
 
@@ -639,6 +640,32 @@ as a document. The list uses the same selection as the Meridian export
 
 The file is plain text, so it can be copied into notes or another tool. It is
 read-only research, not financial advice.
+
+### Send every wallet as text
+
+`/exporttxtfull` builds `exports/all-wallets.txt` from `data/state.json` and
+sends it as a document. Nothing is filtered: recommended, watch, and rejected
+wallets all appear. Rows are ranked by tier (`S` best, then `A`–`D`), then by
+the latest score.
+
+```text
+# Meteora All Wallets
+# Generated: 2026-10-28T03:00:00.000Z
+# Source: data/state.json
+# Last scan: 2026-10-28T02:37:45.620Z
+# Sorted by tier (S best), then score
+# Wallets: 79
+
+  #  Address                                        Tier  Score   Best  Status       First seen  Last seen
+---  --------------------------------------------  ----  -----  -----  -----------  ----------  ----------
+  1  B9U42uELGHcqvGvnqtJxYRGEsrJ7cBJV4MAXbNpSDJLU  S      88.3   88.3  recommended  2026-10-26  2026-10-28
+  2  ...                                            A      80.8   85.0  watch        2026-10-26  2026-10-28
+  3  ...                                            D      40.0   45.0  rejected     2026-10-27  2026-10-27
+```
+
+Use this for review and research. The curated lists (`/exporttxt`, `/export`,
+and the Meridian export) remain the safe choices for actual use, because they
+exclude wallets that failed a gate.
 
 ### Run the bot under PM2
 

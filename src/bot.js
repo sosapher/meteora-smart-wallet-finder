@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ROOT } from "./config.js";
-import { writeSmartWalletText } from "./output.js";
+import { writeAllWalletsText, writeSmartWalletText } from "./output.js";
+import { loadState } from "./state.js";
 import {
   escapeHtml,
   getTelegramMe,
@@ -39,6 +40,7 @@ export function helpText() {
     "/export new — send only new GMGN wallets",
     "/export full — send the full GMGN list",
     "/exporttxt — send smart wallets as a ranked .txt file",
+    "/exporttxtfull — send every wallet ever found, ranked by tier",
     "/id — show this chat ID",
     "/help — show this message",
     "",
@@ -293,6 +295,9 @@ export function commandPlan({ text, state, config, lastScan = null }) {
 
     case "exporttxt":
       return { action: { type: "exporttxt" } };
+
+    case "exporttxtfull":
+      return { action: { type: "exporttxtfull" } };
 
     case "scan": {
       if (state.child) {
@@ -624,6 +629,42 @@ async function handleExportTxt({ chatId, config, logger }) {
   }
 }
 
+async function handleExportTxtFull({ chatId, config, logger }) {
+  const state = loadState(path.join(config.paths.dataDir, "state.json"));
+  const wallets = Object.values(state.wallets || {});
+
+  if (wallets.length === 0) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ No wallets recorded yet. Run /scan first.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const result = writeAllWalletsText(wallets, config, {
+    source: "data/state.json",
+    scanAt: state.lastScanAt,
+  });
+  const caption =
+    `📚 All wallets: ${result.count}\n` +
+    "Sorted by tier (S best), then score. Nothing filtered.";
+  const ok = await sendTelegramDocument(chatId, result.path, {
+    caption,
+    config,
+    logger,
+  });
+  if (!ok) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ Failed to send the all-wallets text file. Check the bot logs.",
+      config,
+      logger,
+    );
+  }
+}
+
 export async function runBot(ctx) {
   const { config, configPath, logger } = ctx;
   const token = config.telegram?.botToken;
@@ -746,6 +787,11 @@ export async function runBot(ctx) {
 
       if (plan.action?.type === "exporttxt") {
         await handleExportTxt({ chatId, config, logger });
+        continue;
+      }
+
+      if (plan.action?.type === "exporttxtfull") {
+        await handleExportTxtFull({ chatId, config, logger });
         continue;
       }
 
