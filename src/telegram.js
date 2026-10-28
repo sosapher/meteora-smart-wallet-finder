@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 const MAX_MESSAGE_LENGTH = 3800;
 const DEFAULT_API_BASE = "https://api.telegram.org";
 
@@ -37,7 +40,7 @@ export async function callTelegram(
   config,
   method,
   payload = {},
-  { logger = null, timeoutMs = 15_000, signal = null } = {},
+  { logger = null, timeoutMs = 15_000, signal = null, formData = null } = {},
 ) {
   const token = config.telegram?.botToken;
   if (!token) throw new Error("Telegram bot token is not configured");
@@ -54,12 +57,17 @@ export async function callTelegram(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      const response = await fetch(
+        url,
+        formData
+          ? { method: "POST", body: formData, signal: controller.signal }
+          : {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            },
+      );
       const body = await response.json().catch(() => ({}));
 
       if (response.ok && body.ok) return body.result;
@@ -163,6 +171,49 @@ export async function sendTelegramMessage(chatId, text, config, logger = null) {
 
 export async function sendTelegram(text, config, logger = null) {
   return sendTelegramMessage(config.telegram?.chatId, text, config, logger);
+}
+
+/**
+ * Send a local file as a Telegram document. Returns false instead of throwing
+ * so a failed upload never breaks the bot loop.
+ */
+export async function sendTelegramDocument(
+  chatId,
+  filePath,
+  { caption = "", config, logger = null } = {},
+) {
+  const token = config.telegram?.botToken;
+  if (!token || !chatId) {
+    logger?.debug("Telegram not configured; skipping document.");
+    return false;
+  }
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Telegram document not found: ${filePath}`);
+  }
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption) {
+    form.append("caption", caption);
+    form.append("parse_mode", "HTML");
+  }
+  form.append(
+    "document",
+    new Blob([fs.readFileSync(filePath)], { type: "application/json" }),
+    path.basename(filePath),
+  );
+
+  try {
+    await callTelegram(config, "sendDocument", {}, {
+      logger,
+      formData: form,
+      timeoutMs: 60_000,
+    });
+    return true;
+  } catch (error) {
+    logger?.warn(`Telegram document send failed: ${error.message}`);
+    return false;
+  }
 }
 
 export function formatCandidateAlert(candidates) {

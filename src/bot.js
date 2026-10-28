@@ -6,6 +6,7 @@ import {
   escapeHtml,
   getTelegramMe,
   getTelegramUpdates,
+  sendTelegramDocument,
   sendTelegramMessage,
 } from "./telegram.js";
 
@@ -33,6 +34,9 @@ export function helpText() {
     "/stop — stop the running scan",
     "/status — show scan status",
     "/last — show top wallets from the last scan",
+    "/export — send the latest GMGN file",
+    "/export new — send only new GMGN wallets",
+    "/export full — send the full GMGN list",
     "/id — show this chat ID",
     "/help — show this message",
     "",
@@ -273,6 +277,18 @@ export function commandPlan({ text, state, config, lastScan = null }) {
     case "last":
       return { reply: formatLastScan(lastScan) };
 
+    case "export": {
+      const mode = String(parsed.args[0] || "auto").toLowerCase();
+      if (!["auto", "new", "full"].includes(mode)) {
+        return {
+          reply:
+            "Usage: <code>/export</code>, <code>/export new</code>, or " +
+            "<code>/export full</code>.",
+        };
+      }
+      return { action: { type: "export", mode } };
+    }
+
     case "scan": {
       if (state.child) {
         return {
@@ -479,6 +495,82 @@ async function latestOffset(config, logger) {
   return updates[updates.length - 1].update_id + 1;
 }
 
+function readGmgnFile(filePath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return Array.isArray(data) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleExport({ chatId, mode, config, logger }) {
+  const settings = config.export?.gmgn || {};
+  const fullPath = path.join(
+    config.paths.exportDir,
+    settings.fileName || "gmgn-follow.json",
+  );
+  const newPath = path.join(
+    config.paths.exportDir,
+    settings.newFileName || "gmgn-new.json",
+  );
+
+  let target = mode === "new" ? newPath : mode === "full" ? fullPath : null;
+  if (!target) {
+    const newWallets = readGmgnFile(newPath);
+    target = newWallets && newWallets.length > 0 ? newPath : fullPath;
+  }
+
+  if (!fs.existsSync(target)) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ No GMGN export found yet. Run /scan first.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const wallets = readGmgnFile(target);
+  if (!wallets) {
+    await sendTelegramMessage(
+      chatId,
+      `❌ Could not read <code>${escapeHtml(path.basename(target))}</code>.`,
+      config,
+      logger,
+    );
+    return;
+  }
+  if (wallets.length === 0) {
+    await sendTelegramMessage(
+      chatId,
+      `❌ <code>${escapeHtml(path.basename(target))}</code> is empty. ` +
+        "Run /scan first, or use /export full.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const label = target === newPath ? "🆕 GMGN new" : "📋 GMGN full";
+  const caption =
+    `${label}: ${wallets.length} wallet(s)\n` +
+    "Import: https://gmgn.ai/follow -> Batch import";
+  const ok = await sendTelegramDocument(chatId, target, {
+    caption,
+    config,
+    logger,
+  });
+  if (!ok) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ Failed to send the GMGN file. Check the bot logs.",
+      config,
+      logger,
+    );
+  }
+}
+
 export async function runBot(ctx) {
   const { config, configPath, logger } = ctx;
   const token = config.telegram?.botToken;
@@ -588,6 +680,16 @@ export async function runBot(ctx) {
         lastScan,
       });
       if (!plan) continue;
+
+      if (plan.action?.type === "export") {
+        await handleExport({
+          chatId,
+          mode: plan.action.mode,
+          config,
+          logger,
+        });
+        continue;
+      }
 
       await sendTelegramMessage(chatId, plan.reply, config, logger);
 

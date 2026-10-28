@@ -112,6 +112,29 @@ test("stop command only acts when a scan is running", () => {
   assert.equal(stop.action.type, "stop");
 });
 
+test("export command plans GMGN document delivery", () => {
+  const state = createBotState();
+
+  const auto = commandPlan({ text: "/export", state, config: CONFIG });
+  assert.equal(auto.action.type, "export");
+  assert.equal(auto.action.mode, "auto");
+  assert.equal(auto.reply, undefined);
+
+  const fresh = commandPlan({ text: "/export new", state, config: CONFIG });
+  assert.equal(fresh.action.mode, "new");
+
+  const full = commandPlan({ text: "/export full", state, config: CONFIG });
+  assert.equal(full.action.mode, "full");
+
+  const invalid = commandPlan({
+    text: "/export everything",
+    state,
+    config: CONFIG,
+  });
+  assert.match(invalid.reply, /Usage/);
+  assert.equal(invalid.action, undefined);
+});
+
 test("formatStatus reports idle and running states", () => {
   const idle = formatStatus(createBotState(), null);
   assert.match(idle, /idle/);

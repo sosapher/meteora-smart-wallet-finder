@@ -586,6 +586,9 @@ Then send `/start` to your bot in Telegram.
 | `/stop` | Stop the running scan (SIGTERM, then SIGKILL after 10s) |
 | `/status` | Show whether a scan is running and the last result |
 | `/last` | Show top wallets from `data/last-scan.json` |
+| `/export` | Send the latest GMGN file (`gmgn-new.json` if non-empty, else `gmgn-follow.json`) |
+| `/export new` | Send only the new GMGN wallets |
+| `/export full` | Send the full GMGN list |
 | `/id` | Show the current chat ID |
 | `/help` | Show command help |
 
@@ -598,6 +601,20 @@ Notes:
 - Commands sent while the bot is offline are skipped on restart.
 - The bot only controls scans. To stop the bot process itself, use PM2 or
   `Ctrl+C`.
+
+### Send GMGN files from Telegram
+
+`/export` uploads the file as a Telegram document, so you can import it on a
+phone without SSH:
+
+1. Run `/scan` and wait for it to finish.
+2. Send `/export`.
+3. Open the document in Telegram, copy its contents, and paste it into
+   <https://gmgn.ai/follow> → **Batch import**.
+
+`/export` picks `exports/gmgn-new.json` when it contains wallets, otherwise it
+falls back to `exports/gmgn-follow.json`. Use `/export new` or `/export full` to
+force one file. If no export exists yet, the bot asks you to run `/scan` first.
 
 ### Run the bot under PM2
 
