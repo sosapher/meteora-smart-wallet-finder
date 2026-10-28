@@ -82,9 +82,13 @@ export const DEFAULT_CONFIG = {
     writeMarkdown: true,
     gmgn: {
       enabled: true,
+      minScore: null,
       maxWallets: 2000,
       namePrefix: "meteora",
       fileName: "gmgn-follow.json",
+      incremental: true,
+      newFileName: "gmgn-new.json",
+      stateFile: "gmgn-exported.json",
     },
   },
   watch: {

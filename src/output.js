@@ -263,23 +263,26 @@ export function gmgnEnabled(config) {
   return config.export?.gmgn?.enabled !== false;
 }
 
+function gmgnSettings(config) {
+  return config.export?.gmgn || {};
+}
+
 function gmgnName(candidate, config) {
-  const prefix = config.export?.gmgn?.namePrefix || "meteora";
-  const tier = String(candidate.score?.tier || "?").toUpperCase();
-  const score = Number(candidate.score?.score);
-  const tag = Number.isFinite(score) ? `${tier}${score}` : tier;
-  return `${prefix}-${tag}-${candidate.address.slice(0, 6)}`;
+  const prefix = gmgnSettings(config).namePrefix || "meteora";
+  return `${prefix}-${candidate.address.slice(0, 6)}`;
 }
 
 /**
- * Build the array GMGN expects when batch-importing followed wallets:
- * [{ address, name, emoji }]. GMGN accepts at most 2,000 addresses and the
- * names must be unique inside one import.
+ * Select the GMGN list independently from Meridian. This lets the GMGN file
+ * hold more wallets than the small Meridian list without changing Meridian's
+ * `export.maxWallets`.
  */
-export function buildGmgnPayload(candidates, config) {
-  const configured = Number(
-    config.export?.gmgn?.maxWallets ?? GMGN_MAX_WALLETS,
+export function selectGmgnCandidates(candidates, config) {
+  const settings = gmgnSettings(config);
+  const minScore = Number(
+    settings.minScore ?? config.export?.minScore ?? config.score?.minScore ?? 0,
   );
+  const configured = Number(settings.maxWallets ?? GMGN_MAX_WALLETS);
   const limit = Math.min(
     GMGN_MAX_WALLETS,
     Math.max(
@@ -290,18 +293,35 @@ export function buildGmgnPayload(candidates, config) {
     ),
   );
 
-  const selected = [...candidates]
+  return candidates
+    .filter((candidate) => candidate.score?.status === "recommended")
+    .filter((candidate) => Number(candidate.score?.score || 0) >= minScore)
     .sort((a, b) => (b.score?.score || 0) - (a.score?.score || 0))
     .slice(0, limit);
+}
 
+/**
+ * Build the array GMGN expects when batch-importing followed wallets:
+ * [{ address, name, emoji }]. GMGN accepts at most 2,000 addresses and the
+ * names must be unique inside one import. Names are address-based so they stay
+ * stable while scores change; the emoji carries the current tier.
+ */
+export function buildGmgnPayload(
+  candidates,
+  config,
+  { namesByAddress = {} } = {},
+) {
   const usedNames = new Set();
-  return selected.map((candidate) => {
-    const base = gmgnName(candidate, config);
-    let name = base;
-    let suffix = 2;
-    while (usedNames.has(name)) {
-      name = `${base}-${suffix}`;
-      suffix += 1;
+  return candidates.map((candidate) => {
+    const savedName = namesByAddress[candidate.address];
+    let name = savedName || gmgnName(candidate, config);
+    if (!savedName) {
+      const base = name;
+      let suffix = 2;
+      while (usedNames.has(name)) {
+        name = `${base}-${suffix}`;
+        suffix += 1;
+      }
     }
     usedNames.add(name);
 
@@ -314,12 +334,108 @@ export function buildGmgnPayload(candidates, config) {
   });
 }
 
-export function writeGmgnExport(candidates, config) {
-  const fileName = config.export?.gmgn?.fileName || "gmgn-follow.json";
-  const gmgnPath = path.join(config.paths.exportDir, fileName);
-  const wallets = buildGmgnPayload(candidates, config);
-  writeJsonAtomic(gmgnPath, wallets);
-  return { wallets, gmgnPath };
+export function gmgnLedgerPath(config) {
+  const fileName = gmgnSettings(config).stateFile || "gmgn-exported.json";
+  return path.join(config.paths.dataDir, fileName);
+}
+
+export function loadGmgnLedger(filePath) {
+  const empty = { version: 1, updatedAt: null, wallets: {} };
+  if (!filePath || !fs.existsSync(filePath)) return empty;
+  try {
+    const payload = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const hasWallets =
+      payload?.wallets &&
+      typeof payload.wallets === "object" &&
+      !Array.isArray(payload.wallets);
+    const wallets = hasWallets ? payload.wallets : {};
+    return {
+      version: payload?.version || 1,
+      updatedAt: payload?.updatedAt || null,
+      wallets,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * Write the full GMGN list and, when incremental mode is on, a second file that
+ * contains only addresses never exported before. The ledger keeps names stable
+ * and lets repeated scans produce small importable diffs.
+ */
+export function writeGmgnExport(
+  candidates,
+  config,
+  { dryRun = false, logger = null } = {},
+) {
+  const settings = gmgnSettings(config);
+  const selected = selectGmgnCandidates(candidates, config);
+  const ledgerPath = gmgnLedgerPath(config);
+  const ledger = loadGmgnLedger(ledgerPath);
+  const namesByAddress = Object.fromEntries(
+    Object.entries(ledger.wallets)
+      .map(([address, entry]) => [address, entry?.name])
+      .filter(([, name]) => Boolean(name)),
+  );
+
+  const wallets = buildGmgnPayload(selected, config, { namesByAddress });
+  const incremental = settings.incremental !== false;
+  const newWallets = incremental
+    ? wallets.filter((wallet) => !Object.hasOwn(ledger.wallets, wallet.address))
+    : [];
+
+  const gmgnPath = path.join(
+    config.paths.exportDir,
+    settings.fileName || "gmgn-follow.json",
+  );
+  const newPath = incremental
+    ? path.join(
+        config.paths.exportDir,
+        settings.newFileName || "gmgn-new.json",
+      )
+    : null;
+
+  if (!dryRun) {
+    writeJsonAtomic(gmgnPath, wallets);
+    if (newPath) writeJsonAtomic(newPath, newWallets);
+
+    if (incremental) {
+      const now = new Date().toISOString();
+      const candidateByAddress = new Map(
+        selected.map((candidate) => [candidate.address, candidate]),
+      );
+
+      for (const wallet of wallets) {
+        const previous = ledger.wallets[wallet.address];
+        const candidate = candidateByAddress.get(wallet.address);
+        ledger.wallets[wallet.address] = {
+          name: wallet.name,
+          emoji: wallet.emoji,
+          firstExportedAt: previous?.firstExportedAt || now,
+          lastExportedAt: now,
+          score: candidate?.score?.score ?? null,
+          tier: candidate?.score?.tier ?? null,
+        };
+      }
+
+      ledger.updatedAt = now;
+      writeJsonAtomic(ledgerPath, ledger);
+    }
+  }
+
+  logger?.debug?.(
+    `GMGN export: ${wallets.length} wallet(s), ${newWallets.length} new` +
+      (dryRun ? " (dry run)" : ""),
+  );
+
+  return {
+    wallets,
+    newWallets,
+    gmgnPath,
+    newPath,
+    ledgerPath: incremental ? ledgerPath : null,
+  };
 }
 
 export function toMeridianEntry(candidate, config, existingNames = new Set()) {
@@ -426,29 +542,19 @@ function markdownTable(candidates) {
   return [header, ...rows].join("\n");
 }
 
-export function writeExports(scanResult, config, logger = null) {
+export function writeExports(
+  scanResult,
+  config,
+  logger = null,
+  { writeMeridian = true, writeGmgn = true, dryRun = false } = {},
+) {
   const candidates = scanResult.candidates || [];
-  const selected = selectExportCandidates(candidates, config);
-  const existing = loadExistingSmartWallets(
-    config.export.meridianSmartWalletsPath,
-    logger,
-  );
-  const { wallets, detailed } = buildExportPayload(selected, config, existing);
-
-  const payload = {
-    generatedAt: new Date().toISOString(),
-    source: "meteora-smart-wallet-finder",
-    criteria: {
-      minScore: config.export.minScore,
-      maxWallets: config.export.maxWallets,
-      minClosedPositions: config.metrics.minClosedPositions,
-      minWinRatePct: config.score.minWinRatePct,
-      minFeeYieldPct: config.score.minFeeYieldPct,
-      minNetRoiPct: config.score.minNetRoiPct,
-    },
-    walletCount: wallets.length,
-    wallets: detailed,
-  };
+  const generatedAt = new Date().toISOString();
+  const selected = writeMeridian
+    ? selectExportCandidates(candidates, config)
+    : [];
+  let wallets = [];
+  let detailed = [];
 
   const jsonPath = path.join(config.paths.exportDir, "recommended.json");
   const snippetPath = path.join(
@@ -457,19 +563,51 @@ export function writeExports(scanResult, config, logger = null) {
   );
   const markdownPath = path.join(config.paths.exportDir, "recommended.md");
 
-  writeJsonAtomic(jsonPath, payload);
-  writeJsonAtomic(snippetPath, wallets);
+  if (writeMeridian) {
+    const existing = loadExistingSmartWallets(
+      config.export.meridianSmartWalletsPath,
+      logger,
+    );
+    ({ wallets, detailed } = buildExportPayload(selected, config, existing));
 
-  const gmgn = gmgnEnabled(config)
-    ? writeGmgnExport(selected, config)
-    : { wallets: [], gmgnPath: null };
+    const payload = {
+      generatedAt,
+      source: "meteora-smart-wallet-finder",
+      criteria: {
+        minScore: config.export.minScore,
+        maxWallets: config.export.maxWallets,
+        minClosedPositions: config.metrics.minClosedPositions,
+        minWinRatePct: config.score.minWinRatePct,
+        minFeeYieldPct: config.score.minFeeYieldPct,
+        minNetRoiPct: config.score.minNetRoiPct,
+      },
+      walletCount: wallets.length,
+      wallets: detailed,
+    };
 
-  if (config.export.writeMarkdown) {
+    if (!dryRun) {
+      writeJsonAtomic(jsonPath, payload);
+      writeJsonAtomic(snippetPath, wallets);
+    }
+  }
+
+  const gmgn =
+    writeGmgn && gmgnEnabled(config)
+      ? writeGmgnExport(candidates, config, { dryRun, logger })
+      : {
+          wallets: [],
+          newWallets: [],
+          gmgnPath: null,
+          newPath: null,
+          ledgerPath: null,
+        };
+
+  if (writeMeridian && config.export.writeMarkdown) {
     const snippet = JSON.stringify(wallets, null, 2);
     const markdown = [
       "# Recommended Meteora smart wallets",
       "",
-      `Generated: ${payload.generatedAt}`,
+      `Generated: ${generatedAt}`,
       "",
       `Criteria: score >= ${config.export.minScore}, >= ${config.metrics.minClosedPositions} closed positions, win rate >= ${config.score.minWinRatePct}%, fee yield >= ${config.score.minFeeYieldPct}%, net ROI >= ${config.score.minNetRoiPct}%.`,
       "",
@@ -498,31 +636,48 @@ export function writeExports(scanResult, config, logger = null) {
             "",
             `\`${gmgn.gmgnPath}\` contains ${gmgn.wallets.length} wallet(s) in GMGN's`,
             "batch-import format. Import it at https://gmgn.ai/follow -> Batch import.",
+            gmgn.newPath
+              ? `\`${gmgn.newPath}\` contains only the ${gmgn.newWallets.length} wallet(s) not exported before.`
+              : "",
             "GMGN accepts at most 2,000 addresses per import.",
             "",
           ]
         : []),
     ].join("\n");
-    fs.writeFileSync(markdownPath, markdown, "utf8");
+    if (!dryRun) fs.writeFileSync(markdownPath, markdown, "utf8");
   }
 
-  logger?.info(
-    `Exports written: ${wallets.length} wallet(s) -> ${jsonPath}` +
-      (gmgn.gmgnPath
-        ? `; ${gmgn.wallets.length} GMGN wallet(s) -> ${gmgn.gmgnPath}`
-        : ""),
-  );
+  const summary = [];
+  if (writeMeridian) {
+    summary.push(`${wallets.length} Meridian wallet(s) -> ${jsonPath}`);
+  }
+  if (gmgn.gmgnPath) {
+    summary.push(
+      `${gmgn.wallets.length} GMGN wallet(s) -> ${gmgn.gmgnPath}` +
+        (gmgn.newPath ? ` (${gmgn.newWallets.length} new)` : ""),
+    );
+  }
+  if (summary.length > 0) {
+    logger?.info(
+      `${dryRun ? "Dry run: would write" : "Exports written:"} ${summary.join("; ")}`,
+    );
+  }
 
   return {
     exported: wallets.length,
     wallets,
     detailed,
     gmgnWallets: gmgn.wallets,
+    gmgnNewWallets: gmgn.newWallets,
+    dryRun,
     paths: {
-      jsonPath,
-      snippetPath,
-      markdownPath,
+      jsonPath: writeMeridian ? jsonPath : null,
+      snippetPath: writeMeridian ? snippetPath : null,
+      markdownPath:
+        writeMeridian && config.export.writeMarkdown ? markdownPath : null,
       gmgnPath: gmgn.gmgnPath,
+      gmgnNewPath: gmgn.newPath,
+      gmgnLedgerPath: gmgn.ledgerPath,
     },
   };
 }

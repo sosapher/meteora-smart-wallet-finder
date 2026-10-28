@@ -77,6 +77,12 @@ node finder.js check 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK
 # Re-export from the last scan at a stricter score
 node finder.js export --min-score 80
 
+# Re-write only the GMGN files
+node finder.js export --gmgn-only
+
+# Preview what would be exported without writing anything
+node finder.js export --dry-run
+
 # Opt in: merge into Meridian's smart-wallets.json (creates a backup)
 node finder.js export --merge
 
@@ -106,6 +112,8 @@ Run `node finder.js --help` for every option.
 | `--refresh` | Ignore cache |
 | `--no-cache` | Disable cache entirely |
 | `--no-export` | Do not write export files |
+| `--gmgn-only` | Re-write only the GMGN files, leaving Meridian exports untouched |
+| `--dry-run` | Compute exports but do not write files or update the GMGN ledger |
 | `--allow-partial` | Allow low-confidence wallets |
 | `--merge` | Merge exported wallets into Meridian |
 | `--json` | Machine-readable output |
@@ -122,7 +130,9 @@ Run `node finder.js --help` for every option.
 | `exports/recommended.json` | Wrapper with metadata and criteria |
 | `exports/recommended.snippet.json` | Plain array ready to copy |
 | `exports/recommended.md` | Human-readable report |
-| `exports/gmgn-follow.json` | GMGN batch-import array (`address`, `name`, `emoji`) |
+| `exports/gmgn-follow.json` | Full GMGN batch-import array (`address`, `name`, `emoji`) |
+| `exports/gmgn-new.json` | Only GMGN wallets never exported before |
+| `data/gmgn-exported.json` | GMGN export ledger (stable names + first/last export time) |
 | `data/finder.log` | Append-only log |
 
 `exports/recommended.snippet.json` contains entries in Meridian's format:
@@ -148,14 +158,15 @@ Only `name`, `address`, and `type` matter to Meridian. `category` is display-onl
 [
   {
     "address": "7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK",
-    "name": "meteora-S88-7Weigv",
+    "name": "meteora-7Weigv",
     "emoji": "🔥"
   }
 ]
 ```
 
-The name embeds the tier and score, and the emoji follows the tier:
-`S` 🔥, `A` ⭐, `B` 👀, `C` 🧐, `D` 💤. Names are always unique inside the file.
+The name is address-based so it stays stable when the score changes. The emoji
+follows the current tier: `S` 🔥, `A` ⭐, `B` 👀, `C` 🧐, `D` 💤. Names are always
+unique inside the file.
 
 ## How scoring works
 
@@ -335,40 +346,78 @@ means more RPC and API work.
 
 ## Importing into GMGN
 
-Every `scan` or `export` also writes `exports/gmgn-follow.json`. It uses the official
-GMGN batch-import shape: a JSON array of `{ address, name, emoji }` objects, with
-no wrapper and no metadata.
+Every `scan` or `export` writes two files:
+
+| File | Contents |
+|---|---|
+| `exports/gmgn-follow.json` | Full list of selected wallets |
+| `exports/gmgn-new.json` | Only wallets never exported before |
+
+Both use the official GMGN batch-import shape: a JSON array of
+`{ address, name, emoji }` objects, with no wrapper and no metadata.
+
+### First import
 
 1. Open <https://gmgn.ai/follow>.
 2. Click **Batch import/export** in the top-right corner.
 3. Paste the entire contents of `exports/gmgn-follow.json`.
 4. Confirm the preview and import.
 
-Notes:
+### Later scans
+
+Use `exports/gmgn-new.json` instead. It contains only addresses that are not in
+`data/gmgn-exported.json`, so you can paste a small diff instead of the whole list.
+
+The exporter also reuses the name saved in the ledger. That keeps labels stable
+even when a wallet's score or tier changes.
+
+`gmgn-new.json` always reflects the latest run. If you skip a diff, import the full
+`gmgn-follow.json` instead; GMGN will handle addresses that are already followed.
+
+### Notes
 
 - GMGN accepts at most **2,000 addresses per import**. The exporter caps the file
-  at 2,000 even if you raise `export.maxWallets`.
-- This project never uploads anything to GMGN. Importing is always manual.
-- The wallet selection is the same as the Meridian export: recommended status,
-  `export.minScore`, sorted by score, capped by `export.maxWallets`.
-- `export.excludeExisting` only filters wallets already in Meridian. The GMGN file
-  is independent, so a wallet already in Meridian can still appear there.
+  at 2,000.
+- The GMGN list is selected independently from Meridian. Configure
+  `export.gmgn.minScore` and `export.gmgn.maxWallets`; Meridian keeps using
+  `export.minScore` and `export.maxWallets`. Set `gmgn.minScore` to `null` to
+  inherit `export.minScore`.
+- `export.excludeExisting` only filters wallets already in Meridian. The GMGN files
+  are independent, so a wallet already in Meridian can still appear there.
 - Names and emojis are cosmetic labels for GMGN. They do not affect scoring.
+- This project never uploads anything to GMGN. Importing is always manual.
 - GMGN importing a wallet does **not** enable copy trading. You still choose which
   wallets to trade manually.
 
-To re-generate only the exports from the last scan:
+### Commands
 
 ```bash
+# Re-generate all exports from the last scan
 node finder.js export
+
+# Re-generate only the GMGN files
+node finder.js export --gmgn-only
+
+# Preview counts without writing files or updating the ledger
+node finder.js export --dry-run
 ```
 
-To disable the GMGN file while keeping the Meridian exports:
+To disable the GMGN files while keeping the Meridian exports:
 
 ```json
 {
   "export": {
     "gmgn": { "enabled": false }
+  }
+}
+```
+
+To disable incremental diffs while keeping the full GMGN list:
+
+```json
+{
+  "export": {
+    "gmgn": { "incremental": false }
   }
 }
 ```
@@ -417,9 +466,13 @@ Start from `config.example.json`. The most useful fields:
     "excludeExisting": true,
     "gmgn": {
       "enabled": true,
+      "minScore": null,          // null = inherit export.minScore
       "maxWallets": 2000,        // GMGN hard limit
       "namePrefix": "meteora",
-      "fileName": "gmgn-follow.json"
+      "fileName": "gmgn-follow.json",
+      "incremental": true,
+      "newFileName": "gmgn-new.json",
+      "stateFile": "gmgn-exported.json"
     }
   },
   "hygiene": {
@@ -597,7 +650,8 @@ Known limitations:
   lower `hygiene.cacheTtlMinutes` if you need fresher balances and activity.
 - GMGN imports are limited to 2,000 addresses. The export file is generated
   locally; this project has no GMGN API integration, no automatic upload, and no
-  copy-trading control.
+  copy-trading control. Deleting `data/gmgn-exported.json` makes every wallet look
+  new again.
 - Wallet history is not predictive. A wallet can change strategy or stop working
   at any time.
 

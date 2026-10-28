@@ -10,6 +10,7 @@ import {
   GMGN_MAX_WALLETS,
   mergeIntoMeridian,
   selectExportCandidates,
+  selectGmgnCandidates,
   writeExports,
 } from "../src/output.js";
 
@@ -142,7 +143,10 @@ test("can include existing addresses when excludeExisting is disabled", () => {
 test("writes JSON, snippet and markdown exports", () => {
   const dir = tempDir();
   const config = baseConfig({
-    paths: { exportDir: path.join(dir, "exports") },
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
     export: {
       meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
       writeMarkdown: true,
@@ -169,10 +173,15 @@ test("writes JSON, snippet and markdown exports", () => {
   assert.deepEqual(gmgn, [
     {
       address: WALLET_A,
-      name: "meteora-S88-7Weigv",
+      name: "meteora-7Weigv",
       emoji: "🔥",
     },
   ]);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(result.paths.gmgnNewPath, "utf8")),
+    gmgn,
+  );
+  assert.ok(fs.existsSync(result.paths.gmgnLedgerPath));
 
   const markdown = fs.readFileSync(result.paths.markdownPath, "utf8");
   assert.match(markdown, /Recommended Meteora smart wallets/);
@@ -195,12 +204,33 @@ test("builds GMGN import entries with unique names and tier emojis", () => {
   );
 
   assert.deepEqual(Object.keys(payload[0]), ["address", "name", "emoji"]);
-  assert.equal(payload[0].name, "meteora-S90-7Weigv");
-  assert.equal(payload[1].name, "meteora-S90-7Weigv-2");
+  assert.equal(payload[0].name, "meteora-7Weigv");
+  assert.equal(payload[1].name, "meteora-7Weigv-2");
   assert.notEqual(payload[0].name, payload[1].name);
   assert.equal(payload[0].emoji, "🔥");
   assert.equal(payload[2].emoji, "⭐");
   assert.equal(payload[3].emoji, "👀");
+});
+
+test("selects GMGN wallets independently from Meridian", () => {
+  const config = baseConfig({
+    export: {
+      maxWallets: 1,
+      minScore: 75,
+      gmgn: { maxWallets: 3, minScore: 70 },
+    },
+  });
+  const candidates = [
+    candidate(WALLET_A, 88),
+    candidate(WALLET_B, 78),
+    candidate(WALLET_C, 72),
+  ];
+
+  assert.equal(selectExportCandidates(candidates, config).length, 1);
+  assert.deepEqual(
+    selectGmgnCandidates(candidates, config).map((entry) => entry.address),
+    [WALLET_A, WALLET_B, WALLET_C],
+  );
 });
 
 test("caps GMGN exports at 2000 wallets", () => {
@@ -212,7 +242,10 @@ test("caps GMGN exports at 2000 wallets", () => {
     return candidate(address, 90);
   });
 
-  const payload = buildGmgnPayload(candidates, config);
+  const payload = buildGmgnPayload(
+    selectGmgnCandidates(candidates, config),
+    config,
+  );
   assert.equal(payload.length, GMGN_MAX_WALLETS);
   assert.equal(new Set(payload.map((entry) => entry.name)).size, GMGN_MAX_WALLETS);
 });
@@ -220,7 +253,10 @@ test("caps GMGN exports at 2000 wallets", () => {
 test("writes an empty GMGN file when nothing qualifies", () => {
   const dir = tempDir();
   const config = baseConfig({
-    paths: { exportDir: path.join(dir, "exports") },
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
     export: {
       meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
       writeMarkdown: true,
@@ -232,16 +268,163 @@ test("writes an empty GMGN file when nothing qualifies", () => {
 
   assert.equal(result.exported, 0);
   assert.deepEqual(result.gmgnWallets, []);
+  assert.deepEqual(result.gmgnNewWallets, []);
   assert.deepEqual(
     JSON.parse(fs.readFileSync(result.paths.gmgnPath, "utf8")),
     [],
   );
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(result.paths.gmgnNewPath, "utf8")),
+    [],
+  );
+});
+
+test("writes only new GMGN wallets and keeps names stable", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
+    export: {
+      meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
+      gmgn: { incremental: true },
+    },
+  });
+  fs.mkdirSync(config.paths.exportDir, { recursive: true });
+
+  const first = writeExports(
+    { candidates: [candidate(WALLET_A, 80)] },
+    config,
+  );
+  assert.equal(first.gmgnWallets.length, 1);
+  assert.equal(first.gmgnNewWallets.length, 1);
+  assert.equal(first.gmgnWallets[0].name, "meteora-7Weigv");
+  assert.equal(first.gmgnWallets[0].emoji, "⭐");
+
+  const second = writeExports(
+    { candidates: [candidate(WALLET_A, 92)] },
+    config,
+  );
+  assert.equal(second.gmgnNewWallets.length, 0);
+  assert.equal(second.gmgnWallets[0].name, "meteora-7Weigv");
+  assert.equal(second.gmgnWallets[0].emoji, "🔥");
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(second.paths.gmgnNewPath, "utf8")),
+    [],
+  );
+
+  const third = writeExports(
+    {
+      candidates: [
+        candidate(WALLET_A, 92),
+        candidate(WALLET_B, 86),
+      ],
+    },
+    config,
+  );
+  assert.equal(third.gmgnWallets.length, 2);
+  assert.equal(third.gmgnNewWallets.length, 1);
+  assert.equal(third.gmgnNewWallets[0].address, WALLET_B);
+
+  const ledger = JSON.parse(
+    fs.readFileSync(third.paths.gmgnLedgerPath, "utf8"),
+  );
+  assert.equal(ledger.wallets[WALLET_A].name, "meteora-7Weigv");
+  assert.equal(ledger.wallets[WALLET_B].name, "meteora-28F7nE");
+});
+
+test("dry run computes exports without writing files", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
+    export: {
+      meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
+    },
+  });
+  fs.mkdirSync(config.paths.exportDir, { recursive: true });
+
+  const result = writeExports(
+    { candidates: [candidate(WALLET_A, 88)] },
+    config,
+    null,
+    { dryRun: true },
+  );
+
+  assert.equal(result.dryRun, true);
+  assert.equal(result.wallets.length, 1);
+  assert.equal(result.gmgnWallets.length, 1);
+  assert.equal(result.gmgnNewWallets.length, 1);
+  assert.ok(!fs.existsSync(result.paths.jsonPath));
+  assert.ok(!fs.existsSync(result.paths.gmgnPath));
+  assert.ok(!fs.existsSync(result.paths.gmgnNewPath));
+  assert.ok(!fs.existsSync(result.paths.gmgnLedgerPath));
+});
+
+test("gmgn-only skips Meridian files", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
+    export: {
+      meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
+    },
+  });
+  fs.mkdirSync(config.paths.exportDir, { recursive: true });
+
+  const result = writeExports(
+    { candidates: [candidate(WALLET_A, 88)] },
+    config,
+    null,
+    { writeMeridian: false },
+  );
+
+  assert.equal(result.exported, 0);
+  assert.equal(result.wallets.length, 0);
+  assert.equal(result.gmgnWallets.length, 1);
+  assert.equal(result.paths.jsonPath, null);
+  assert.ok(fs.existsSync(result.paths.gmgnPath));
+  assert.ok(!fs.existsSync(path.join(config.paths.exportDir, "recommended.json")));
+});
+
+test("can disable incremental GMGN diffs", () => {
+  const dir = tempDir();
+  const config = baseConfig({
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
+    export: {
+      meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
+      gmgn: { incremental: false },
+    },
+  });
+  fs.mkdirSync(config.paths.exportDir, { recursive: true });
+
+  const result = writeExports(
+    { candidates: [candidate(WALLET_A, 88)] },
+    config,
+  );
+
+  assert.equal(result.paths.gmgnNewPath, null);
+  assert.equal(result.paths.gmgnLedgerPath, null);
+  assert.deepEqual(result.gmgnNewWallets, []);
+  assert.ok(fs.existsSync(result.paths.gmgnPath));
+  assert.ok(!fs.existsSync(path.join(config.paths.exportDir, "gmgn-new.json")));
 });
 
 test("skips the GMGN file when disabled", () => {
   const dir = tempDir();
   const config = baseConfig({
-    paths: { exportDir: path.join(dir, "exports") },
+    paths: {
+      dataDir: path.join(dir, "data"),
+      exportDir: path.join(dir, "exports"),
+    },
     export: {
       meridianSmartWalletsPath: path.join(dir, "smart-wallets.json"),
       gmgn: { enabled: false },

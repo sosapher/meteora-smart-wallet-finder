@@ -73,6 +73,8 @@ OPTIONS
   --refresh         Ignore cache
   --no-cache        Disable cache for this run
   --no-export       Do not write export files
+  --gmgn-only       Re-write only the GMGN files (export command)
+  --dry-run         Show what would be exported without writing files
   --merge           Merge exported wallets into Meridian smart-wallets.json
   --allow-partial   Allow low-confidence wallets (n < 5 or incomplete history)
   --json            Print machine-readable JSON
@@ -87,6 +89,8 @@ EXAMPLES
   node finder.js scan --refresh --verbose
   node finder.js check 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK
   node finder.js export --min-score 80
+  node finder.js export --gmgn-only
+  node finder.js export --dry-run
   node finder.js export --merge
   node finder.js watch --interval 30
   node finder.js watch --once
@@ -99,6 +103,9 @@ OUTPUT
   exports/recommended.json             Meridian-compatible wrapper
   exports/recommended.snippet.json     Plain array for copy/paste
   exports/recommended.md               Human-readable report
+  exports/gmgn-follow.json             Full GMGN batch-import array
+  exports/gmgn-new.json                Only wallets never exported before
+  data/gmgn-exported.json              GMGN export ledger
 
 NOTES
   Smart wallet history is not a guarantee of future performance. This tool is
@@ -603,15 +610,44 @@ async function runExport(ctx) {
     },
   };
 
-  const result = writeExports(lastScan, exportConfig, logger);
-  const selected = selectExportCandidates(lastScan.candidates || [], exportConfig);
+  const gmgnOnly = boolArg(args["gmgn-only"]);
+  const dryRun = boolArg(args["dry-run"]);
+  const merge = boolArg(args.merge);
+
+  if (gmgnOnly && merge) {
+    throw new Error("--gmgn-only cannot be combined with --merge.");
+  }
+  if (dryRun && merge) {
+    throw new Error("--dry-run cannot be combined with --merge.");
+  }
+
+  const result = writeExports(lastScan, exportConfig, logger, {
+    writeMeridian: !gmgnOnly,
+    writeGmgn: true,
+    dryRun,
+  });
+  const selected = gmgnOnly
+    ? []
+    : selectExportCandidates(lastScan.candidates || [], exportConfig);
+
   if (boolArg(args.json)) {
-    console.log(JSON.stringify(result.wallets, null, 2));
+    console.log(
+      JSON.stringify(gmgnOnly ? result.gmgnWallets : result.wallets, null, 2),
+    );
   } else {
-    logger.info(`Exported ${result.exported} wallet(s) to ${result.paths.jsonPath}`);
+    if (result.paths.jsonPath && !dryRun) {
+      logger.info(
+        `Exported ${result.exported} wallet(s) to ${result.paths.jsonPath}`,
+      );
+    }
     if (result.paths.gmgnPath) {
       logger.info(
-        `GMGN list: ${result.gmgnWallets.length} wallet(s) -> ${result.paths.gmgnPath}`,
+        `${dryRun ? "Would write" : "GMGN list:"} ${result.gmgnWallets.length} wallet(s) -> ${result.paths.gmgnPath}`,
+      );
+    }
+    if (result.paths.gmgnNewPath) {
+      logger.info(
+        `${dryRun ? "Would write" : "GMGN new:"} ${result.gmgnNewWallets.length} new wallet(s) -> ${result.paths.gmgnNewPath}`,
       );
     }
     if (selected.length > 0) {
@@ -619,7 +655,7 @@ async function runExport(ctx) {
     }
   }
 
-  if (boolArg(args.merge)) {
+  if (merge) {
     mergeIntoMeridian(result.wallets, exportConfig, logger);
   }
 
