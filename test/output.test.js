@@ -69,6 +69,33 @@ test("selects only recommended candidates above the score threshold", () => {
   assert.deepEqual(selected.map((entry) => entry.address), [WALLET_A]);
 });
 
+test("diverse selection caps wallets that share a funder", () => {
+  const funder = "6nKGfqzWjXKLdfcBLivx4Y2YwSANYfsHtFQ3b5Ck3bo9";
+  const config = baseConfig({ export: { minScore: 75, maxWallets: 10 } });
+
+  const withFunder = (address, score) => {
+    const entry = candidate(address, score, "recommended");
+    entry.metrics.hygiene = { enabled: true, funder, funderType: "wallet" };
+    return entry;
+  };
+
+  const candidates = [
+    withFunder(WALLET_A, 90),
+    withFunder(WALLET_B, 88),
+    withFunder(WALLET_C, 86),
+  ];
+
+  const plain = selectExportCandidates(candidates, config);
+  assert.equal(plain.length, 3);
+
+  const diverse = selectExportCandidates(candidates, config, { diverse: true });
+  assert.equal(diverse.length, 2);
+  assert.deepEqual(
+    diverse.map((entry) => entry.address),
+    [WALLET_A, WALLET_B],
+  );
+});
+
 test("builds a ranked plain-text smart wallet export", () => {
   const config = baseConfig({ export: { minScore: 75, maxWallets: 10 } });
   const text = buildSmartWalletText(

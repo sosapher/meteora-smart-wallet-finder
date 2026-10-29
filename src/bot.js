@@ -3,8 +3,18 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { ROOT } from "./config.js";
 import { isSolanaAddress } from "./lpers.js";
-import { writeAllWalletsText, writeSmartWalletText } from "./output.js";
+import {
+  eligibleExportCandidates,
+  writeAllWalletsText,
+  writeSmartWalletText,
+} from "./output.js";
 import { loadState } from "./state.js";
+import {
+  clusterCandidates,
+  formatClusterReport,
+  formatDiversityPreview,
+  selectDiverse,
+} from "./clusters.js";
 import {
   formatPerformanceReport,
   loadPerformance,
@@ -54,6 +64,8 @@ export function helpText() {
     "/watch — show schedule status",
     "/perf — how earlier recommendations are doing now",
     "/perf refresh [1-20] — re-check tracked wallets live",
+    "/clusters — find wallets that share a funder",
+    "/exporttxt diverse — cap wallets per funder group",
     "/export — send the latest GMGN file",
     "/export new — send only new GMGN wallets",
     "/export full — send the full GMGN list",
@@ -80,6 +92,7 @@ export const BOT_COMMANDS = [
   { command: "wallet", description: "Show one wallet: /wallet <address>" },
   { command: "watch", description: "Scheduled scans: on 30m | off | now" },
   { command: "perf", description: "Track how past recommendations perform" },
+  { command: "clusters", description: "Find wallets that share a funder" },
   { command: "export", description: "Send the latest GMGN file" },
   { command: "exporttxt", description: "Send smart wallets as ranked text" },
   { command: "exporttxtfull", description: "Send every wallet as ranked text" },
@@ -517,6 +530,13 @@ export function commandPlan({ text, state, config, lastScan = null }) {
       return { action: { type: "perf", refresh, limit, days } };
     }
 
+    case "clusters": {
+      const diverse = parsed.args.some((arg) =>
+        ["--diverse", "diverse"].includes(String(arg).toLowerCase()),
+      );
+      return { action: { type: "clusters", diverse } };
+    }
+
     case "export": {
       const mode = String(parsed.args[0] || "auto").toLowerCase();
       if (!["auto", "new", "full"].includes(mode)) {
@@ -529,8 +549,12 @@ export function commandPlan({ text, state, config, lastScan = null }) {
       return { action: { type: "export", mode } };
     }
 
-    case "exporttxt":
-      return { action: { type: "exporttxt" } };
+    case "exporttxt": {
+      const diverse = parsed.args.some((arg) =>
+        ["diverse", "--diverse"].includes(String(arg).toLowerCase()),
+      );
+      return { action: { type: "exporttxt", diverse } };
+    }
 
     case "exporttxtfull":
       return { action: { type: "exporttxtfull" } };
@@ -785,7 +809,10 @@ function num(value) {
   return Number.isFinite(number) ? String(number) : "-";
 }
 
-export function formatWalletReport(result, { source = "last scan" } = {}) {
+export function formatWalletReport(
+  result,
+  { source = "last scan", cluster = null } = {},
+) {
   const score = result.score || {};
   const metrics = result.metrics || {};
   const hygiene = metrics.hygiene || result.hygiene || {};
@@ -826,6 +853,16 @@ export function formatWalletReport(result, { source = "last scan" } = {}) {
       parts.push(`shared x${hygiene.sharedFunderCount}`);
     }
     if (parts.length > 0) lines.push(`On-chain: ${parts.join(" · ")}`);
+  }
+
+  if (cluster?.isCluster) {
+    const funder = cluster.funderShort
+      ? ` · funder ${escapeHtml(cluster.funderShort)}`
+      : "";
+    lines.push(
+      `Cluster: <b>${escapeHtml(cluster.id)}</b> · ${cluster.size} wallet(s)` +
+        `${funder}${cluster.recommended ? ` · ${cluster.recommended} recommended` : ""}`,
+    );
   }
 
   if (metrics.daysSinceActive != null) {
@@ -1026,9 +1063,16 @@ async function handleWallet({
     (candidate) => candidate.address === address,
   );
   if (found) {
+    const analysis = clusterCandidates(
+      lastScan.candidates || [],
+      config.diversity || {},
+    );
     await sendTelegramMessage(
       chatId,
-      formatWalletReport(found, { source: "last scan" }),
+      formatWalletReport(found, {
+        source: "last scan",
+        cluster: analysis.clusterOf(address),
+      }),
       config,
       logger,
     );
@@ -1239,6 +1283,45 @@ async function handleWatch({
   }
 }
 
+async function handleClusters({ chatId, action, config, logger }) {
+  const lastScan = readLastScan(config);
+  if (!lastScan) {
+    await sendTelegramMessage(
+      chatId,
+      "❌ No scan result yet. Run /scan first.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const candidates = Array.isArray(lastScan.candidates)
+    ? lastScan.candidates
+    : [];
+  const analysis = clusterCandidates(candidates, config.diversity || {});
+  const poolNames = {};
+  for (const candidate of candidates) {
+    for (const pool of candidate.poolsChecked || []) {
+      if (pool?.address && pool?.name) poolNames[pool.address] = pool.name;
+    }
+    for (const pool of candidate.metrics?.poolBreakdown || []) {
+      if (pool?.pool && pool?.name) poolNames[pool.pool] = pool.name;
+    }
+  }
+
+  let text = formatClusterReport(analysis, { poolNames });
+  if (action.diverse) {
+    const eligible = eligibleExportCandidates(candidates, config);
+    const selection = selectDiverse(eligible, analysis, {
+      ...(config.diversity || {}),
+      limit: Math.max(1, Number(config.export?.maxWallets || 10)),
+    });
+    text += `\n\n${formatDiversityPreview(selection)}`;
+  }
+
+  await sendTelegramMessage(chatId, text, config, logger);
+}
+
 async function handlePerformance({
   chatId,
   action,
@@ -1424,7 +1507,7 @@ async function handleExport({ chatId, mode, config, logger }) {
   }
 }
 
-async function handleExportTxt({ chatId, config, logger }) {
+async function handleExportTxt({ chatId, diverse = false, config, logger }) {
   const lastScan = readLastScan(config);
   if (!lastScan) {
     await sendTelegramMessage(
@@ -1441,6 +1524,7 @@ async function handleExportTxt({ chatId, config, logger }) {
     : [];
   const result = writeSmartWalletText(candidates, config, {
     source: "data/last-scan.json",
+    diverse,
   });
 
   if (result.count === 0) {
@@ -1456,7 +1540,9 @@ async function handleExportTxt({ chatId, config, logger }) {
 
   const caption =
     `📄 Smart wallets: ${result.count} wallet(s)\n` +
-    "Sorted by score, best first.";
+    (diverse
+      ? `Sorted by score, capped at ${config.diversity?.maxPerCluster ?? 2} per funder group.`
+      : "Sorted by score, best first.");
   const ok = await sendTelegramDocument(chatId, result.path, {
     caption,
     config,
@@ -1702,8 +1788,23 @@ export async function runBot(ctx) {
         continue;
       }
 
+      if (plan.action?.type === "clusters") {
+        await handleClusters({
+          chatId,
+          action: plan.action,
+          config,
+          logger,
+        });
+        continue;
+      }
+
       if (plan.action?.type === "exporttxt") {
-        await handleExportTxt({ chatId, config, logger });
+        await handleExportTxt({
+          chatId,
+          diverse: Boolean(plan.action.diverse),
+          config,
+          logger,
+        });
         continue;
       }
 

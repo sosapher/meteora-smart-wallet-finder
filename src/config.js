@@ -104,6 +104,11 @@ export const DEFAULT_CONFIG = {
     maxChecks: 10,
     checksToKeep: 20,
   },
+  diversity: {
+    maxPerCluster: 2,
+    maxPerPool: 4,
+    fundingWindowMinutes: 1,
+  },
   telegram: {
     botToken: "",
     chatId: "",

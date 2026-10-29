@@ -262,6 +262,32 @@ test("BOT_COMMANDS are valid Telegram commands and all are handled", () => {
   }
 });
 
+test("clusters and diverse export commands are parsed", () => {
+  const state = createBotState();
+
+  const clusters = commandPlan({ text: "/clusters", state, config: CONFIG });
+  assert.equal(clusters.action.type, "clusters");
+  assert.equal(clusters.action.diverse, false);
+
+  const preview = commandPlan({
+    text: "/clusters --diverse",
+    state,
+    config: CONFIG,
+  });
+  assert.equal(preview.action.diverse, true);
+
+  const plain = commandPlan({ text: "/exporttxt", state, config: CONFIG });
+  assert.equal(plain.action.type, "exporttxt");
+  assert.equal(plain.action.diverse, false);
+
+  const diverse = commandPlan({
+    text: "/exporttxt diverse",
+    state,
+    config: CONFIG,
+  });
+  assert.equal(diverse.action.diverse, true);
+});
+
 test("perf command parses refresh, limit, and day window", () => {
   const state = createBotState();
 

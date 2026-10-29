@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { clusterCandidates, selectDiverse } from "./clusters.js";
 import path from "node:path";
 import { loadExistingSmartWallets } from "./wallets.js";
 import { round, shortAddress } from "./util.js";
@@ -463,13 +464,24 @@ export function writeJsonAtomic(file, data) {
   fs.renameSync(tmp, file);
 }
 
-export function selectExportCandidates(candidates, config) {
+export function eligibleExportCandidates(candidates, config) {
   const minScore = Number(config.export.minScore || config.score.minScore || 0);
   return candidates
     .filter((candidate) => candidate.score?.status === "recommended")
     .filter((candidate) => candidate.score?.score >= minScore)
-    .sort((a, b) => b.score.score - a.score.score)
-    .slice(0, Math.max(1, Number(config.export.maxWallets || 10)));
+    .sort((a, b) => b.score.score - a.score.score);
+}
+
+export function selectExportCandidates(candidates, config, { diverse = false } = {}) {
+  const maxWallets = Math.max(1, Number(config.export.maxWallets || 10));
+  const eligible = eligibleExportCandidates(candidates, config);
+  if (!diverse) return eligible.slice(0, maxWallets);
+
+  const analysis = clusterCandidates(eligible, config.diversity || {});
+  return selectDiverse(eligible, analysis, {
+    ...(config.diversity || {}),
+    limit: maxWallets,
+  }).selected;
 }
 
 export function buildExportPayload(candidates, config, existing = null) {
@@ -556,9 +568,9 @@ function textCell(value, width, align = "left") {
 export function buildSmartWalletText(
   candidates,
   config,
-  { generatedAt = new Date().toISOString(), source = "last scan" } = {},
+  { generatedAt = new Date().toISOString(), source = "last scan", diverse = false } = {},
 ) {
-  const selected = selectExportCandidates(candidates || [], config);
+  const selected = selectExportCandidates(candidates || [], config, { diverse });
   const minScore = Number(
     config.export?.minScore || config.score?.minScore || 0,
   );
@@ -646,7 +658,9 @@ export function writeSmartWalletText(candidates, config, options = {}) {
   return {
     path: file,
     text,
-    count: selectExportCandidates(candidates || [], config).length,
+    count: selectExportCandidates(candidates || [], config, {
+      diverse: Boolean(options.diverse),
+    }).length,
   };
 }
 
@@ -766,12 +780,12 @@ export function writeExports(
   scanResult,
   config,
   logger = null,
-  { writeMeridian = true, writeGmgn = true, dryRun = false } = {},
+  { writeMeridian = true, writeGmgn = true, dryRun = false, diverse = false } = {},
 ) {
   const candidates = scanResult.candidates || [];
   const generatedAt = new Date().toISOString();
   const selected = writeMeridian
-    ? selectExportCandidates(candidates, config)
+    ? selectExportCandidates(candidates, config, { diverse })
     : [];
   let wallets = [];
   let detailed = [];

@@ -23,6 +23,12 @@ import {
 } from "./src/output.js";
 import { updateState } from "./src/state.js";
 import {
+  clusterCandidates,
+  formatClusterReport,
+  formatDiversityPreview,
+  selectDiverse,
+} from "./src/clusters.js";
+import {
   formatPerformanceReport,
   loadPerformance,
   performanceSummary,
@@ -56,6 +62,7 @@ USAGE
   node finder.js bot [options]
   node finder.js hygiene <wallet> [options]
   node finder.js perf [options]
+  node finder.js clusters [options]
   node finder.js config [options]
 
 COMMANDS
@@ -72,6 +79,7 @@ COMMANDS
                     funding source using Helius RPC.
   perf              Show how wallets recommended earlier are performing now.
                     Use --days <n> to limit the window.
+  clusters          Group wallets that share a funder or a funding moment.
   config            Print effective config with secrets masked.
 
 OPTIONS
@@ -90,6 +98,8 @@ OPTIONS
   --interval <min>  Watch interval in minutes (default: watch.intervalMinutes)
   --once            Watch: run a single scan then exit
   --days <n>        Perf: only wallets recommended in the last n days
+  --diverse         Cap wallets per funder group and per pool (clusters,
+                    export)
   --config <path>   Config file (default: ./config.json)
   --verbose         Debug logs
   --help            Show this help
@@ -108,6 +118,8 @@ EXAMPLES
   node finder.js hygiene 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK
   node finder.js perf
   node finder.js perf --days 7
+  node finder.js clusters
+  node finder.js export --diverse
 
 OUTPUT
   data/last-scan.json                  Full scan result
@@ -645,10 +657,12 @@ async function runExport(ctx) {
     throw new Error("--dry-run cannot be combined with --merge.");
   }
 
+  const diverse = boolArg(args.diverse);
   const result = writeExports(lastScan, exportConfig, logger, {
     writeMeridian: !gmgnOnly,
     writeGmgn: true,
     dryRun,
+    diverse,
   });
   const selected = gmgnOnly
     ? []
@@ -766,6 +780,60 @@ async function runPerf(ctx) {
   return summary;
 }
 
+async function runClusters(ctx) {
+  const { config, args, logger } = ctx;
+  const lastScan = loadLastScan(config, logger);
+  if (!lastScan) {
+    throw new Error("No last scan found. Run `node finder.js scan` first.");
+  }
+
+  const candidates = lastScan.candidates || [];
+  const analysis = clusterCandidates(candidates, config.diversity || {});
+  const poolNames = {};
+  for (const candidate of candidates) {
+    for (const pool of candidate.poolsChecked || []) {
+      if (pool?.address && pool?.name) poolNames[pool.address] = pool.name;
+    }
+    for (const pool of candidate.metrics?.poolBreakdown || []) {
+      if (pool?.pool && pool?.name) poolNames[pool.pool] = pool.name;
+    }
+  }
+
+  const eligible = selectExportCandidates(candidates, config);
+  const selection = selectDiverse(eligible, analysis, {
+    ...(config.diversity || {}),
+    limit: Math.max(1, Number(config.export?.maxWallets || 10)),
+  });
+
+  if (boolArg(args.json)) {
+    console.log(
+      JSON.stringify(
+        {
+          analyzed: analysis.analyzed,
+          clusteredWallets: analysis.clusteredWallets,
+          clusters: analysis.clusters,
+          selected: selection.selected.map((candidate) => candidate.address),
+          skipped: selection.skipped,
+        },
+        null,
+        2,
+      ),
+    );
+    return analysis;
+  }
+
+  console.log(formatClusterReport(analysis, { poolNames }).replace(/<[^>]+>/g, ""));
+  if (boolArg(args.diverse)) {
+    console.log("");
+    console.log(formatDiversityPreview(selection).replace(/<[^>]+>/g, ""));
+  }
+  logger.info(
+    `Clusters: ${analysis.clusters.length} group(s) covering ` +
+      `${analysis.clusteredWallets}/${analysis.analyzed} wallet(s).`,
+  );
+  return analysis;
+}
+
 function maskConfig(config) {
   const clone = JSON.parse(JSON.stringify(config));
   if (clone.api?.agentMeridianApiKey) clone.api.agentMeridianApiKey = "***masked***";
@@ -816,6 +884,9 @@ async function main() {
       break;
     case "perf":
       await runPerf(ctx);
+      break;
+    case "clusters":
+      await runClusters(ctx);
       break;
     case "config":
       await runConfig(ctx);

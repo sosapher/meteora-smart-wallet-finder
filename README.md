@@ -596,6 +596,9 @@ Then send `/start` to your bot in Telegram.
 | `/perf` | Show how wallets recommended earlier are performing now |
 | `/perf refresh [1-20]` | Re-check tracked wallets live, then report |
 | `/perf --days 7` | Limit the report to the last 7 days |
+| `/clusters` | Group wallets that share a funder |
+| `/clusters --diverse` | Preview the diverse selection |
+| `/exporttxt diverse` | Ranked text export capped per funder group |
 | `/export` | Send the latest GMGN file (`gmgn-new.json` if non-empty, else `gmgn-follow.json`) |
 | `/export new` | Send only the new GMGN wallets |
 | `/export full` | Send the full GMGN list |
@@ -766,6 +769,52 @@ Config:
 | `performance.staleHours` | `24` | Age before a wallet counts as stale |
 | `performance.maxChecks` | `10` | Default wallets per `/perf refresh` |
 | `performance.checksToKeep` | `20` | Measurement points kept per wallet |
+
+### Clusters and diversity
+
+Many "different" wallets are one person: same funder, or funded in the same
+minute while trading the same pool. `/clusters` groups them:
+
+```text
+/clusters
+/clusters --diverse
+```
+
+```text
+🧩 Cluster analysis
+Analyzed: 35 wallet(s) · clusters: 1 · grouped wallets: 3
+
+Groups found
+• c1 — 3 wallets · funder 6nKGfq...3bo9 · avg score 49.3 · 0 recommended
+  pools: GTA6-SOL, SAPLING-SOL, STONK-SOL
+  4LXDMs...gjTz, 8JzjP2...DgJH, 7YknTs...paHN
+```
+
+Diversity selection is opt-in, so existing exports never change silently:
+
+```text
+/exporttxt diverse
+```
+
+```bash
+node finder.js clusters
+node finder.js clusters --json
+node finder.js clusters --diverse
+node finder.js export --diverse
+```
+
+Selection is greedy from the highest score, and drops a wallet when:
+
+- its group already has `diversity.maxPerCluster` wallets, or
+- every pool it trades already has `diversity.maxPerPool` wallets.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `diversity.maxPerCluster` | `2` | Max wallets per funder group |
+| `diversity.maxPerPool` | `4` | Max wallets touching the same pool |
+| `diversity.fundingWindowMinutes` | `1` | Same-funding-moment window (0 disables) |
+
+`/wallet <address>` also shows the group of a wallet when it has one.
 
 ### Run the bot under PM2
 
