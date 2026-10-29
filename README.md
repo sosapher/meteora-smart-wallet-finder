@@ -586,6 +586,12 @@ Then send `/start` to your bot in Telegram.
 | `/stop` | Stop the running scan (SIGTERM, then SIGKILL after 10s) |
 | `/status` | Show whether a scan is running and the last result |
 | `/last` | Show top wallets from `data/last-scan.json` |
+| `/wallet <address>` | Show score, metrics, warnings, and open pools for one wallet |
+| `/wallet <address> --refresh` | Run a live deep-check for one wallet |
+| `/watch on 30m` | Run a scan every 30 minutes |
+| `/watch off` | Stop scheduled scans |
+| `/watch` | Show the schedule and next run |
+| `/watch now` | Start a scheduled scan immediately |
 | `/export` | Send the latest GMGN file (`gmgn-new.json` if non-empty, else `gmgn-follow.json`) |
 | `/export new` | Send only the new GMGN wallets |
 | `/export full` | Send the full GMGN list |
@@ -667,6 +673,49 @@ Use this for review and research. The curated lists (`/exporttxt`, `/export`,
 and the Meridian export) remain the safe choices for actual use, because they
 exclude wallets that failed a gate.
 
+### Wallet details
+
+`/wallet <address>` shows the last scan result for one wallet:
+
+```text
+/wallet 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK
+```
+
+The report includes score, tier, status, win rate, fee yield, ROI, profit
+factor, hold time, range width, open positions, Helius hygiene, reasons,
+warnings, failed gates, and open pools. If the wallet is not in the last scan,
+the bot falls back to `data/state.json`. Use `--refresh` to run a live
+deep-check instead:
+
+```text
+/wallet 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK --refresh
+```
+
+A live check can take up to a few minutes because it fetches closed positions
+and open positions. It is disabled while a scan is running.
+
+### Scheduled scans
+
+The bot can run scans on a schedule, so you do not need a separate `watch`
+process:
+
+```text
+/watch on 30m
+/watch
+/watch now
+/watch off
+```
+
+- `/watch on 30m` enables a scan every 30 minutes. `1h`, `90m`, and plain
+  minutes are accepted (1–1440).
+- `/watch` shows whether it is on, the interval, and the next run.
+- `/watch now` starts a scheduled scan immediately.
+- `/watch off` stops the schedule. It does not stop a scan that is already
+  running; use `/stop` for that.
+- The schedule is saved in `data/telegram-watch.json`, so it resumes after a
+  bot restart. The file is removed when watch is turned off.
+- New recommended wallets found by a scheduled scan are sent as an alert.
+
 ### Run the bot under PM2
 
 ```bash
@@ -677,9 +726,10 @@ pm2 save
 ```
 
 Avoid running `watch` mode and the Telegram bot at the same time: both can start
-scans and write `data/last-scan.json`. Pick one control model:
+scans and write `data/last-scan.json`. Use `/watch on 30m` inside the bot
+instead. If you prefer the CLI, run one control model at a time:
 
-- **Bot control:** start scans manually from Telegram.
+- **Bot control:** start scans manually from Telegram or enable `/watch`.
 - **Watch mode:** automatic scans every N minutes with alerts.
 
 ## API sources and limitations

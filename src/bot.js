@@ -2,15 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ROOT } from "./config.js";
+import { isSolanaAddress } from "./lpers.js";
 import { writeAllWalletsText, writeSmartWalletText } from "./output.js";
 import { loadState } from "./state.js";
 import {
   escapeHtml,
+  formatCandidateAlert,
   getTelegramMe,
   getTelegramUpdates,
   sendTelegramDocument,
   sendTelegramMessage,
 } from "./telegram.js";
+import { shortAddress } from "./util.js";
 
 const MAX_TAIL_LINES = 20;
 const KILL_GRACE_MS = 10_000;
@@ -36,6 +39,11 @@ export function helpText() {
     "/stop — stop the running scan",
     "/status — show scan status",
     "/last — show top wallets from the last scan",
+    "/wallet <address> — show wallet details",
+    "/wallet <address> --refresh — run a live wallet check",
+    "/watch on 30m — run scheduled scans",
+    "/watch off — stop scheduled scans",
+    "/watch — show schedule status",
     "/export — send the latest GMGN file",
     "/export new — send only new GMGN wallets",
     "/export full — send the full GMGN list",
@@ -58,6 +66,22 @@ export function parseBotCommand(text) {
   const name = raw.slice(1).split("@")[0].toLowerCase();
   if (!name) return null;
   return { name, args };
+}
+
+export function parseWatchInterval(value, fallback = 30) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return fallback;
+  const match = text.match(/^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/);
+  if (!match) {
+    throw new Error("Interval must look like 30m, 90m, or 1h");
+  }
+  const amount = Number(match[1]);
+  const unit = match[2] || "m";
+  const minutes = unit.startsWith("h") ? amount * 60 : amount;
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+    throw new Error("Interval must be between 1m and 1440m (24h)");
+  }
+  return minutes;
 }
 
 export function buildScanArgs(tokens = []) {
@@ -125,7 +149,97 @@ export function createBotState() {
     killTimer: null,
     scanArgs: [],
     tail: [],
+    watch: {
+      enabled: false,
+      intervalMinutes: 30,
+      nextRunAt: 0,
+      timer: null,
+      chatId: null,
+    },
   };
+}
+
+function watchSettingsPath(config) {
+  return path.join(config.paths.dataDir, "telegram-watch.json");
+}
+
+export function loadWatchSettings(config) {
+  const configured = Number(config.watch?.intervalMinutes);
+  const fallback = {
+    enabled: false,
+    intervalMinutes:
+      Number.isFinite(configured) && configured >= 1 && configured <= 1440
+        ? Math.floor(configured)
+        : 30,
+    chatId: config.telegram?.chatId ? String(config.telegram.chatId) : null,
+    nextRunAt: 0,
+  };
+  const file = watchSettingsPath(config);
+  if (!fs.existsSync(file)) return fallback;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    const interval = Number(raw.intervalMinutes);
+    return {
+      enabled: Boolean(raw.enabled),
+      intervalMinutes:
+        Number.isFinite(interval) && interval >= 1 && interval <= 1440
+          ? Math.floor(interval)
+          : fallback.intervalMinutes,
+      chatId: raw.chatId ? String(raw.chatId) : fallback.chatId,
+      nextRunAt: Number.isFinite(Number(raw.nextRunAt))
+        ? Number(raw.nextRunAt)
+        : 0,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveWatchSettings(config, watch) {
+  const file = watchSettingsPath(config);
+
+  // Keep the file only while a schedule is active, so a disabled watch leaves
+  // no stale state behind.
+  if (!watch.enabled) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      // Ignore: a missing file is the desired end state.
+    }
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    `${JSON.stringify(
+      {
+        enabled: Boolean(watch.enabled),
+        intervalMinutes: watch.intervalMinutes,
+        chatId: watch.chatId,
+        nextRunAt: watch.nextRunAt || 0,
+        updatedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+export function formatWatchStatus(state) {
+  const watch = state?.watch;
+  if (!watch?.enabled) {
+    return (
+      "👀 <b>Watch</b>: off\n" +
+      "Use <code>/watch on 30m</code> to run scans on a schedule."
+    );
+  }
+  const next =
+    watch.nextRunAt > Date.now()
+      ? formatDuration(watch.nextRunAt - Date.now())
+      : "soon";
+  return `👀 <b>Watch</b>: on · every ${watch.intervalMinutes}m · next in ${next}`;
 }
 
 function formatDuration(ms) {
@@ -177,6 +291,16 @@ export function formatStatus(state, lastScan) {
     );
   } else {
     lines.push("Last scan: none yet");
+  }
+
+  if (state.watch?.enabled) {
+    const next =
+      state.watch.nextRunAt > Date.now()
+        ? ` · next in ${formatDuration(state.watch.nextRunAt - Date.now())}`
+        : "";
+    lines.push(`Watch: <b>on</b> · every ${state.watch.intervalMinutes}m${next}`);
+  } else {
+    lines.push("Watch: off");
   }
 
   return lines.join("\n");
@@ -281,6 +405,54 @@ export function commandPlan({ text, state, config, lastScan = null }) {
     case "last":
       return { reply: formatLastScan(lastScan) };
 
+    case "wallet": {
+      const address = parsed.args.find((arg) => !arg.startsWith("--"));
+      const refresh = parsed.args.includes("--refresh");
+      if (!address) {
+        return {
+          reply:
+            "Usage: <code>/wallet &lt;address&gt;</code> or " +
+            "<code>/wallet &lt;address&gt; --refresh</code>.",
+        };
+      }
+      if (!isSolanaAddress(address)) {
+        return { reply: "❌ That does not look like a Solana wallet address." };
+      }
+      return { action: { type: "wallet", address, refresh } };
+    }
+
+    case "watch": {
+      const mode = String(parsed.args[0] || "status").toLowerCase();
+      if (mode === "status") {
+        return { action: { type: "watch", mode: "status" } };
+      }
+      if (mode === "off") {
+        return { action: { type: "watch", mode: "off" } };
+      }
+      if (mode === "now") {
+        return { action: { type: "watch", mode: "now" } };
+      }
+      if (mode === "on") {
+        let intervalMinutes;
+        try {
+          intervalMinutes = parseWatchInterval(
+            parsed.args[1],
+            Number(config.watch?.intervalMinutes || 30),
+          );
+        } catch (error) {
+          return { reply: `❌ ${escapeHtml(error.message)}` };
+        }
+        return {
+          action: { type: "watch", mode: "on", intervalMinutes },
+        };
+      }
+      return {
+        reply:
+          "Usage: <code>/watch on 30m</code>, <code>/watch off</code>, " +
+          "<code>/watch now</code>, or <code>/watch</code>.",
+      };
+    }
+
     case "export": {
       const mode = String(parsed.args[0] || "auto").toLowerCase();
       if (!["auto", "new", "full"].includes(mode)) {
@@ -373,7 +545,15 @@ function appendTail(state, chunk) {
   }
 }
 
-function startScan({ state, config, configPath, scanArgs, chatId, logger }) {
+function startScan({
+  state,
+  config,
+  configPath,
+  scanArgs,
+  chatId,
+  logger,
+  knownRecommended = null,
+}) {
   const childArgs = [path.join(ROOT, "finder.js"), "scan", ...scanArgs];
   if (configPath) childArgs.push("--config", configPath);
 
@@ -437,6 +617,23 @@ function startScan({ state, config, configPath, scanArgs, chatId, logger }) {
         config,
         logger,
       );
+
+      if (knownRecommended) {
+        const fresh = (lastScan?.candidates || []).filter(
+          (candidate) =>
+            candidate.score?.status === "recommended" &&
+            !knownRecommended.has(candidate.address),
+        );
+        if (fresh.length > 0) {
+          sendTelegramMessage(
+            chatId,
+            formatCandidateAlert(fresh),
+            config,
+            logger,
+          );
+        }
+      }
+
       logger.info(`Telegram scan finished in ${elapsed}`);
       return;
     }
@@ -511,6 +708,470 @@ function readGmgnFile(filePath) {
     return Array.isArray(data) ? data : null;
   } catch {
     return null;
+  }
+}
+
+function pct(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number}%` : "-";
+}
+
+function num(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : "-";
+}
+
+export function formatWalletReport(result, { source = "last scan" } = {}) {
+  const score = result.score || {};
+  const metrics = result.metrics || {};
+  const hygiene = metrics.hygiene || result.hygiene || {};
+  const open = result.open || {};
+  const lines = [
+    "👛 <b>Wallet report</b>",
+    `<code>${escapeHtml(result.address || "")}</code>`,
+    `<i>Source: ${escapeHtml(source)}</i>`,
+    "",
+    `<b>${score.score ?? "-"} · ${score.tier ?? "?"} · ${score.status ?? "unknown"}</b>`,
+  ];
+
+  if (score.qualified != null) {
+    lines.push(`Qualified: ${score.qualified ? "yes" : "no"}`);
+  }
+  lines.push(
+    `${metrics.n ?? 0} closed · win ${pct(metrics.winRatePct)} · ` +
+      `fee ${pct(metrics.feeYieldPct)} · ROI ${pct(metrics.netRoiPct)}`,
+  );
+  lines.push(
+    `PF ${num(metrics.profitFactor)} · hold ${num(metrics.avgHoldHours)}h · ` +
+      `range ${num(metrics.medianWidthBins)} bins · ${metrics.poolCount ?? 0} pool(s)`,
+  );
+  lines.push(
+    `Open: ${open.totalPositions ?? 0} position(s) in ${open.pools?.length ?? 0} pool(s)`,
+  );
+
+  if (hygiene?.enabled) {
+    const parts = [];
+    if (hygiene.walletAgeDays != null) {
+      parts.push(
+        `age ${hygiene.walletAgeDays}d${hygiene.ageCapped ? "+" : ""}`,
+      );
+    }
+    if (hygiene.solBalance != null) parts.push(`SOL ${hygiene.solBalance}`);
+    if (hygiene.funder) parts.push(`funder ${shortAddress(hygiene.funder)}`);
+    if (hygiene.sharedFunderCount > 1) {
+      parts.push(`shared x${hygiene.sharedFunderCount}`);
+    }
+    if (parts.length > 0) lines.push(`On-chain: ${parts.join(" · ")}`);
+  }
+
+  if (metrics.daysSinceActive != null) {
+    lines.push(
+      `Active: ${
+        metrics.openPositions > 0 ? "now" : `${metrics.daysSinceActive}d ago`
+      }`,
+    );
+  }
+
+  const reasons = (score.reasons || []).slice(0, 6);
+  if (reasons.length > 0) {
+    lines.push("", "<b>Why</b>");
+    reasons.forEach((reason) => lines.push(`• ${escapeHtml(reason)}`));
+  }
+
+  const warnings = (score.warnings || []).slice(0, 5);
+  if (warnings.length > 0) {
+    lines.push("", "<b>Warnings</b>");
+    warnings.forEach((warning) => lines.push(`⚠️ ${escapeHtml(warning)}`));
+  }
+
+  const failed = (score.gates || []).filter((gate) => gate.ok === false);
+  const rejection = (score.rejectionReasons || []).slice(0, 5);
+  if (failed.length > 0) {
+    lines.push("", "<b>Failed gates</b>");
+    failed
+      .slice(0, 5)
+      .forEach((gate) =>
+        lines.push(`❌ ${escapeHtml(gate.code)}: ${escapeHtml(gate.detail)}`),
+      );
+  } else if (rejection.length > 0) {
+    lines.push("", "<b>Rejected because</b>");
+    rejection.forEach((reason) => lines.push(`❌ ${escapeHtml(reason)}`));
+  }
+
+  const pools = (open.pools || []).slice(0, 5);
+  if (pools.length > 0) {
+    lines.push("", "<b>Open pools</b>");
+    pools.forEach((pool) => {
+      lines.push(
+        `• ${escapeHtml(pool.name || shortAddress(pool.address))} ` +
+          `(${pool.positionCount ?? 0})${pool.outOfRange ? " ⚠️ OOR" : ""}`,
+      );
+    });
+  }
+
+  lines.push("", "<i>Read-only research. Verify manually.</i>");
+  return lines.join("\n");
+}
+
+function formatWalletState(wallet, { source = "recorded state" } = {}) {
+  const lines = [
+    "👛 <b>Wallet report</b>",
+    `<code>${escapeHtml(wallet.address || "")}</code>`,
+    `<i>Source: ${escapeHtml(source)}</i>`,
+    "",
+    `<b>${wallet.lastScore ?? "-"} · ${wallet.lastTier ?? "?"} · ${
+      wallet.status ?? "unknown"
+    }</b>`,
+    `Best score: ${wallet.bestScore ?? "-"}`,
+    `First seen: ${formatAge(wallet.firstSeen)} · Last seen: ${formatAge(
+      wallet.lastSeen,
+    )}`,
+  ];
+
+  const warnings = (wallet.lastWarnings || []).slice(0, 5);
+  if (warnings.length > 0) {
+    lines.push("", "<b>Warnings</b>");
+    warnings.forEach((warning) => lines.push(`⚠️ ${escapeHtml(warning)}`));
+  }
+
+  lines.push(
+    "",
+    "This wallet was not deep-checked in the last scan.",
+    `Use <code>/wallet ${escapeHtml(wallet.address || "")} --refresh</code> for live data.`,
+  );
+  return lines.join("\n");
+}
+
+function runWalletCheck({ address, configPath, logger, timeoutMs = 180_000 }) {
+  return new Promise((resolve, reject) => {
+    const childArgs = [path.join(ROOT, "finder.js"), "check", address, "--json"];
+    if (configPath) childArgs.push("--config", configPath);
+
+    const child = spawn(process.execPath, childArgs, {
+      cwd: ROOT,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error("Wallet check timed out after 3 minutes."));
+        return;
+      }
+      if (code !== 0) {
+        const tail = stderr.trim().split("\n").slice(-4).join("\n");
+        reject(
+          new Error(
+            `Wallet check failed (exit ${code ?? signal ?? "?"}): ` +
+              (tail || "no output"),
+          ),
+        );
+        return;
+      }
+      try {
+        const start = stdout.indexOf("{");
+        const end = stdout.lastIndexOf("}");
+        if (start < 0 || end < start) {
+          throw new Error("no JSON in output");
+        }
+        resolve(JSON.parse(stdout.slice(start, end + 1)));
+      } catch (error) {
+        logger?.warn(`Cannot parse wallet check output: ${error.message}`);
+        reject(new Error("Could not read the wallet check result."));
+      }
+    });
+  });
+}
+
+async function handleWallet({
+  chatId,
+  address,
+  refresh,
+  state,
+  config,
+  configPath,
+  logger,
+}) {
+  if (refresh) {
+    if (state.child) {
+      await sendTelegramMessage(
+        chatId,
+        "⏳ A scan is running. Wait for it to finish, then try again.",
+        config,
+        logger,
+      );
+      return;
+    }
+
+    await sendTelegramMessage(
+      chatId,
+      `🔎 Checking <code>${escapeHtml(address)}</code> across the last scan pools...`,
+      config,
+      logger,
+    );
+
+    try {
+      const result = await runWalletCheck({
+        address,
+        configPath,
+        logger,
+      });
+      await sendTelegramMessage(
+        chatId,
+        formatWalletReport(result, { source: "live check" }),
+        config,
+        logger,
+      );
+    } catch (error) {
+      await sendTelegramMessage(
+        chatId,
+        `❌ ${escapeHtml(error.message)}`,
+        config,
+        logger,
+      );
+    }
+    return;
+  }
+
+  const lastScan = readLastScan(config);
+  const found = lastScan?.candidates?.find(
+    (candidate) => candidate.address === address,
+  );
+  if (found) {
+    await sendTelegramMessage(
+      chatId,
+      formatWalletReport(found, { source: "last scan" }),
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const saved = loadState(
+    path.join(config.paths.dataDir, "state.json"),
+  ).wallets?.[address];
+  if (saved) {
+    await sendTelegramMessage(
+      chatId,
+      formatWalletState(saved),
+      config,
+      logger,
+    );
+    return;
+  }
+
+  await sendTelegramMessage(
+    chatId,
+    "❌ Wallet not found in the last scan or saved state.\n" +
+      `Run <code>/wallet ${escapeHtml(address)} --refresh</code> for a live check.`,
+    config,
+    logger,
+  );
+}
+
+function scheduleWatch({
+  state,
+  config,
+  configPath,
+  logger,
+  delayMs,
+}) {
+  const watch = state.watch;
+  if (!watch?.enabled) return;
+
+  if (watch.timer) clearTimeout(watch.timer);
+  watch.nextRunAt = Date.now() + Math.max(1000, delayMs);
+  saveWatchSettings(config, watch);
+
+  watch.timer = setTimeout(() => {
+    watch.timer = null;
+    if (!watch.enabled) return;
+
+    if (state.child) {
+      logger.info("Scheduled scan skipped: another scan is already running.");
+      scheduleWatch({
+        state,
+        config,
+        configPath,
+        logger,
+        delayMs: 60_000,
+      });
+      return;
+    }
+
+    const chatId = watch.chatId || config.telegram?.chatId;
+    if (!chatId) {
+      logger.warn("Watch is enabled but no chat ID is configured; disabling.");
+      watch.enabled = false;
+      watch.nextRunAt = 0;
+      saveWatchSettings(config, watch);
+      return;
+    }
+
+    const lastScan = readLastScan(config);
+    const knownRecommended = new Set(
+      (lastScan?.candidates || [])
+        .filter((candidate) => candidate.score?.status === "recommended")
+        .map((candidate) => candidate.address),
+    );
+
+    sendTelegramMessage(
+      chatId,
+      `⏰ <b>Scheduled scan started</b> · every ${watch.intervalMinutes}m`,
+      config,
+      logger,
+    );
+    startScan({
+      state,
+      config,
+      configPath,
+      scanArgs: [],
+      chatId,
+      logger,
+      knownRecommended,
+    });
+    scheduleWatch({
+      state,
+      config,
+      configPath,
+      logger,
+      delayMs: watch.intervalMinutes * 60_000,
+    });
+  }, Math.max(1000, delayMs));
+}
+
+async function handleWatch({
+  chatId,
+  action,
+  state,
+  config,
+  configPath,
+  logger,
+}) {
+  const watch = state.watch;
+
+  if (action.mode === "status") {
+    await sendTelegramMessage(
+      chatId,
+      formatWatchStatus(state),
+      config,
+      logger,
+    );
+    return;
+  }
+
+  if (action.mode === "off") {
+    if (watch.timer) clearTimeout(watch.timer);
+    watch.timer = null;
+    watch.enabled = false;
+    watch.nextRunAt = 0;
+    saveWatchSettings(config, watch);
+    await sendTelegramMessage(
+      chatId,
+      "👀 <b>Watch off</b>. Scheduled scans stopped.",
+      config,
+      logger,
+    );
+    logger.info(`Telegram watch disabled by chat ${chatId}`);
+    return;
+  }
+
+  if (action.mode === "on") {
+    watch.enabled = true;
+    watch.intervalMinutes = action.intervalMinutes;
+    watch.chatId = chatId;
+    scheduleWatch({
+      state,
+      config,
+      configPath,
+      logger,
+      delayMs: action.intervalMinutes * 60_000,
+    });
+    await sendTelegramMessage(
+      chatId,
+      `👀 <b>Watch on</b> · every ${action.intervalMinutes}m.\n` +
+        `Next scan in ${action.intervalMinutes}m. Use /watch off to stop.`,
+      config,
+      logger,
+    );
+    logger.info(
+      `Telegram watch enabled by chat ${chatId}: every ${action.intervalMinutes}m`,
+    );
+    return;
+  }
+
+  if (action.mode === "now") {
+    if (!watch.enabled) {
+      await sendTelegramMessage(
+        chatId,
+        "Watch is off. Use <code>/watch on 30m</code> first.",
+        config,
+        logger,
+      );
+      return;
+    }
+    if (state.child) {
+      await sendTelegramMessage(
+        chatId,
+        "⏳ A scan is already running. Use /status or /stop.",
+        config,
+        logger,
+      );
+      return;
+    }
+    const lastScan = readLastScan(config);
+    const knownRecommended = new Set(
+      (lastScan?.candidates || [])
+        .filter((candidate) => candidate.score?.status === "recommended")
+        .map((candidate) => candidate.address),
+    );
+    await sendTelegramMessage(
+      chatId,
+      "⏰ <b>Scheduled scan started now</b>",
+      config,
+      logger,
+    );
+    startScan({
+      state,
+      config,
+      configPath,
+      scanArgs: [],
+      chatId,
+      logger,
+      knownRecommended,
+    });
+    scheduleWatch({
+      state,
+      config,
+      configPath,
+      logger,
+      delayMs: watch.intervalMinutes * 60_000,
+    });
+    return;
   }
 }
 
@@ -698,11 +1359,45 @@ export async function runBot(ctx) {
   let stopping = false;
   let pollController = null;
 
+  const savedWatch = loadWatchSettings(config);
+  const watchChat = String(savedWatch.chatId || config.telegram?.chatId || "");
+  state.watch.intervalMinutes = savedWatch.intervalMinutes;
+  state.watch.chatId = watchChat || null;
+  state.watch.enabled =
+    Boolean(savedWatch.enabled) && allowed.has(watchChat);
+  if (savedWatch.enabled && !state.watch.enabled) {
+    logger.warn(
+      "Saved watch schedule uses an unauthorized chat ID; disabling it.",
+    );
+    saveWatchSettings(config, state.watch);
+  }
+  if (state.watch.enabled) {
+    const delay =
+      savedWatch.nextRunAt > Date.now()
+        ? savedWatch.nextRunAt - Date.now()
+        : 5000;
+    scheduleWatch({
+      state,
+      config,
+      configPath,
+      logger,
+      delayMs: delay,
+    });
+    logger.info(
+      `Watch schedule resumed: every ${state.watch.intervalMinutes}m.`,
+    );
+  }
+
   const requestStop = () => {
     if (stopping) return;
     stopping = true;
     logger.info("Telegram bot stopping...");
     pollController?.abort();
+    if (state.watch?.timer) {
+      clearTimeout(state.watch.timer);
+      state.watch.timer = null;
+    }
+    saveWatchSettings(config, state.watch);
     if (state.child) stopScan(state, logger);
   };
 
@@ -775,6 +1470,31 @@ export async function runBot(ctx) {
       });
       if (!plan) continue;
 
+      if (plan.action?.type === "wallet") {
+        await handleWallet({
+          chatId,
+          address: plan.action.address,
+          refresh: plan.action.refresh,
+          state,
+          config,
+          configPath,
+          logger,
+        });
+        continue;
+      }
+
+      if (plan.action?.type === "watch") {
+        await handleWatch({
+          chatId,
+          action: plan.action,
+          state,
+          config,
+          configPath,
+          logger,
+        });
+        continue;
+      }
+
       if (plan.action?.type === "export") {
         await handleExport({
           chatId,
@@ -811,6 +1531,12 @@ export async function runBot(ctx) {
       }
     }
   }
+
+  if (state.watch?.timer) {
+    clearTimeout(state.watch.timer);
+    state.watch.timer = null;
+  }
+  saveWatchSettings(config, state.watch);
 
   if (state.child) {
     await new Promise((resolve) => {

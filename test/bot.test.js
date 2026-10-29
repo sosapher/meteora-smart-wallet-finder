@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   allowedChatIds,
   buildScanArgs,
@@ -7,13 +10,20 @@ import {
   createBotState,
   formatLastScan,
   formatStatus,
+  formatWalletReport,
+  formatWatchStatus,
+  loadWatchSettings,
   parseBotCommand,
+  parseWatchInterval,
+  saveWatchSettings,
 } from "../src/bot.js";
 
 const CONFIG = {
   telegram: { allowedChatIds: [], chatId: "" },
   paths: { dataDir: "/tmp/does-not-exist" },
 };
+
+const WALLET_A = "7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK";
 
 test("parseBotCommand handles commands and @bot suffixes", () => {
   assert.deepEqual(parseBotCommand("/scan --pools 5"), {
@@ -153,6 +163,193 @@ test("exporttxtfull command plans the unfiltered text document", () => {
   });
   assert.equal(plan.action.type, "exporttxtfull");
   assert.equal(plan.reply, undefined);
+});
+
+test("parseWatchInterval accepts minutes and hours", () => {
+  assert.equal(parseWatchInterval("30m"), 30);
+  assert.equal(parseWatchInterval("90"), 90);
+  assert.equal(parseWatchInterval("1h"), 60);
+  assert.equal(parseWatchInterval("2h"), 120);
+  assert.equal(parseWatchInterval(undefined, 45), 45);
+  assert.throws(() => parseWatchInterval("0m"), /between 1m and 1440m/);
+  assert.throws(() => parseWatchInterval("25h"), /between 1m and 1440m/);
+  assert.throws(() => parseWatchInterval("soon"), /Interval must look like/);
+});
+
+test("loadWatchSettings reads a saved schedule", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swf-watch-"));
+  const config = {
+    paths: { dataDir: dir },
+    watch: { intervalMinutes: 30 },
+    telegram: { chatId: "1" },
+  };
+  fs.writeFileSync(
+    path.join(dir, "telegram-watch.json"),
+    JSON.stringify({
+      enabled: true,
+      intervalMinutes: 60,
+      chatId: "42",
+      nextRunAt: 123456,
+    }),
+  );
+
+  assert.deepEqual(loadWatchSettings(config), {
+    enabled: true,
+    intervalMinutes: 60,
+    chatId: "42",
+    nextRunAt: 123456,
+  });
+});
+
+test("saveWatchSettings persists an active schedule and clears it when off", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swf-watch-save-"));
+  const config = {
+    paths: { dataDir: dir },
+    watch: { intervalMinutes: 30 },
+    telegram: { chatId: "1" },
+  };
+  const file = path.join(dir, "telegram-watch.json");
+
+  saveWatchSettings(config, {
+    enabled: true,
+    intervalMinutes: 15,
+    chatId: "42",
+    nextRunAt: 999,
+  });
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).intervalMinutes, 15);
+
+  saveWatchSettings(config, {
+    enabled: false,
+    intervalMinutes: 15,
+    chatId: "42",
+    nextRunAt: 0,
+  });
+  assert.equal(fs.existsSync(file), false);
+});
+
+test("wallet command validates the address and refresh flag", () => {
+  const state = createBotState();
+  const plan = commandPlan({
+    text: `/wallet ${WALLET_A}`,
+    state,
+    config: CONFIG,
+  });
+  assert.equal(plan.action.type, "wallet");
+  assert.equal(plan.action.address, WALLET_A);
+  assert.equal(plan.action.refresh, false);
+
+  const refresh = commandPlan({
+    text: `/wallet ${WALLET_A} --refresh`,
+    state,
+    config: CONFIG,
+  });
+  assert.equal(refresh.action.refresh, true);
+
+  const missing = commandPlan({ text: "/wallet", state, config: CONFIG });
+  assert.match(missing.reply, /Usage/);
+
+  const invalid = commandPlan({
+    text: "/wallet not-a-wallet",
+    state,
+    config: CONFIG,
+  });
+  assert.match(invalid.reply, /Solana wallet address/);
+});
+
+test("watch command parses on, off, and status", () => {
+  const state = createBotState();
+
+  const status = commandPlan({ text: "/watch", state, config: CONFIG });
+  assert.equal(status.action.type, "watch");
+  assert.equal(status.action.mode, "status");
+
+  const on = commandPlan({
+    text: "/watch on 45m",
+    state,
+    config: CONFIG,
+  });
+  assert.equal(on.action.mode, "on");
+  assert.equal(on.action.intervalMinutes, 45);
+
+  const off = commandPlan({ text: "/watch off", state, config: CONFIG });
+  assert.equal(off.action.mode, "off");
+
+  const now = commandPlan({ text: "/watch now", state, config: CONFIG });
+  assert.equal(now.action.mode, "now");
+
+  const bad = commandPlan({
+    text: "/watch on 0m",
+    state,
+    config: CONFIG,
+  });
+  assert.match(bad.reply, /between 1m and 1440m/);
+});
+
+test("formatWalletReport renders score, metrics, and warnings", () => {
+  const report = formatWalletReport(
+    {
+      address: WALLET_A,
+      score: {
+        score: 88.3,
+        tier: "S",
+        status: "recommended",
+        qualified: true,
+        reasons: ["37 closed positions", "win rate 70.3%"],
+        warnings: ["avg hold >72h"],
+        gates: [{ code: "sample", ok: true, detail: "37 closed positions" }],
+        rejectionReasons: [],
+      },
+      metrics: {
+        n: 37,
+        winRatePct: 70.3,
+        feeYieldPct: 20.56,
+        netRoiPct: 16.96,
+        profitFactor: 9.69,
+        avgHoldHours: 127.59,
+        medianWidthBins: 32,
+        poolCount: 3,
+        daysSinceActive: 0,
+        openPositions: 2,
+        hygiene: {
+          enabled: true,
+          walletAgeDays: 50.1,
+          solBalance: 0.4,
+          funder: "DMnanMNSwgm3s8yN5n7QjFTm4nDfVjuMJvaAv6biWYd6",
+          sharedFunderCount: 2,
+        },
+      },
+      open: {
+        totalPositions: 2,
+        pools: [
+          { name: "OPENAI-USDC", positionCount: 2, outOfRange: true },
+        ],
+      },
+    },
+    { source: "unit-test" },
+  );
+
+  assert.match(report, /Wallet report/);
+  assert.match(report, new RegExp(WALLET_A));
+  assert.match(report, /88\.3/);
+  assert.match(report, /S · recommended/);
+  assert.match(report, /37 closed/);
+  assert.match(report, /avg hold &gt;72h/);
+  assert.match(report, /OPENAI-USDC/);
+  assert.match(report, /OOR/);
+  assert.match(report, /Read-only research/);
+});
+
+test("formatWatchStatus reflects the schedule", () => {
+  const state = createBotState();
+  assert.match(formatWatchStatus(state), /Watch<\/b>: off/);
+
+  state.watch.enabled = true;
+  state.watch.intervalMinutes = 15;
+  state.watch.nextRunAt = Date.now() + 5 * 60_000;
+  const text = formatWatchStatus(state);
+  assert.match(text, /Watch<\/b>: on/);
+  assert.match(text, /every 15m/);
+  assert.match(text, /next in/);
 });
 
 test("formatStatus reports idle and running states", () => {

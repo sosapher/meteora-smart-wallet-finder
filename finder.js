@@ -168,6 +168,7 @@ function buildContext() {
   const logger = createLogger({
     verbose: boolArg(args.verbose),
     logFile: config.paths.logFile,
+    quiet: boolArg(args.json),
   });
   const cache = new Cache(config.paths.cacheDir, {
     enabled: !boolArg(args["no-cache"]),

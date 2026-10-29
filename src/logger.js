@@ -2,11 +2,12 @@ import fs from "node:fs";
 
 const LEVEL_ORDER = { DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 };
 
-export function createLogger({ verbose = false, logFile = null } = {}) {
+export function createLogger({ verbose = false, logFile = null, quiet = false } = {}) {
   const write = (level, message) => {
     const line = `${new Date().toISOString()} ${level.padEnd(5)} ${message}`;
     if (level === "ERROR") console.error(line);
     else if (level === "WARN") console.warn(line);
+    else if (quiet) console.error(line);
     else console.log(line);
 
     if (logFile) {
