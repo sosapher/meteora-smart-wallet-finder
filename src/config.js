@@ -98,6 +98,12 @@ export const DEFAULT_CONFIG = {
     alertOnFirstRun: false,
     telegram: false,
   },
+  performance: {
+    enabled: true,
+    staleHours: 24,
+    maxChecks: 10,
+    checksToKeep: 20,
+  },
   telegram: {
     botToken: "",
     chatId: "",

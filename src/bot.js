@@ -6,6 +6,13 @@ import { isSolanaAddress } from "./lpers.js";
 import { writeAllWalletsText, writeSmartWalletText } from "./output.js";
 import { loadState } from "./state.js";
 import {
+  formatPerformanceReport,
+  loadPerformance,
+  performanceSummary,
+  recordLiveCheck,
+  staleWallets,
+} from "./performance.js";
+import {
   escapeHtml,
   formatCandidateAlert,
   getTelegramMe,
@@ -45,6 +52,8 @@ export function helpText() {
     "/watch on 30m — run scheduled scans",
     "/watch off — stop scheduled scans",
     "/watch — show schedule status",
+    "/perf — how earlier recommendations are doing now",
+    "/perf refresh [1-20] — re-check tracked wallets live",
     "/export — send the latest GMGN file",
     "/export new — send only new GMGN wallets",
     "/export full — send the full GMGN list",
@@ -70,6 +79,7 @@ export const BOT_COMMANDS = [
   { command: "last", description: "Show top wallets from the last scan" },
   { command: "wallet", description: "Show one wallet: /wallet <address>" },
   { command: "watch", description: "Scheduled scans: on 30m | off | now" },
+  { command: "perf", description: "Track how past recommendations perform" },
   { command: "export", description: "Send the latest GMGN file" },
   { command: "exporttxt", description: "Send smart wallets as ranked text" },
   { command: "exporttxtfull", description: "Send every wallet as ranked text" },
@@ -168,6 +178,7 @@ export function createBotState() {
     killTimer: null,
     scanArgs: [],
     tail: [],
+    perfTask: null,
     watch: {
       enabled: false,
       intervalMinutes: 30,
@@ -470,6 +481,40 @@ export function commandPlan({ text, state, config, lastScan = null }) {
           "Usage: <code>/watch on 30m</code>, <code>/watch off</code>, " +
           "<code>/watch now</code>, or <code>/watch</code>.",
       };
+    }
+
+    case "perf": {
+      const tokens = parsed.args.map((token) => String(token));
+      const refresh = String(tokens[0] || "").toLowerCase() === "refresh";
+      const rest = refresh ? tokens.slice(1) : tokens;
+      let limit = null;
+      let days = null;
+
+      for (let index = 0; index < rest.length; index += 1) {
+        const token = rest[index];
+        if (token === "--days") {
+          days = Number(rest[index + 1]);
+          index += 1;
+          if (!Number.isFinite(days) || days <= 0) {
+            return { reply: "❌ <code>--days</code> needs a positive number." };
+          }
+          continue;
+        }
+        if (refresh && limit === null) {
+          limit = Number(token);
+          if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+            return { reply: "❌ Refresh count must be between 1 and 20." };
+          }
+          continue;
+        }
+        return {
+          reply:
+            "Usage: <code>/perf</code>, <code>/perf refresh [1-20]</code>, " +
+            "or <code>/perf --days 7</code>.",
+        };
+      }
+
+      return { action: { type: "perf", refresh, limit, days } };
     }
 
     case "export": {
@@ -1194,6 +1239,124 @@ async function handleWatch({
   }
 }
 
+async function handlePerformance({
+  chatId,
+  action,
+  state,
+  config,
+  configPath,
+  logger,
+}) {
+  const perfConfig = config.performance || {};
+  const days = Number.isFinite(Number(action.days)) ? Number(action.days) : null;
+
+  if (!action.refresh) {
+    const summary = performanceSummary(loadPerformance(config), {
+      horizonDays: days,
+    });
+    await sendTelegramMessage(
+      chatId,
+      formatPerformanceReport(summary),
+      config,
+      logger,
+    );
+    return;
+  }
+
+  if (state.perfTask) {
+    await sendTelegramMessage(
+      chatId,
+      "⏳ A performance refresh is already running. Wait for the report.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  if (state.child) {
+    await sendTelegramMessage(
+      chatId,
+      "⏳ A scan is running. Wait for it to finish, then try again.",
+      config,
+      logger,
+    );
+    return;
+  }
+
+  const perf = loadPerformance(config);
+  const limit = Math.min(
+    20,
+    Math.max(
+      1,
+      Number(action.limit) ||
+        Number(perfConfig.maxChecks) ||
+        5,
+    ),
+  );
+  const staleHours = Math.max(1, Number(perfConfig.staleHours) || 24);
+  const stale = staleWallets(perf, { staleHours, limit });
+
+  if (stale.length === 0) {
+    const summary = performanceSummary(perf, { horizonDays: days });
+    await sendTelegramMessage(
+      chatId,
+      `✅ All tracked wallets were checked in the last ${staleHours}h.\n\n` +
+        formatPerformanceReport(summary),
+      config,
+      logger,
+    );
+    return;
+  }
+
+  await sendTelegramMessage(
+    chatId,
+    `🔎 Re-checking ${stale.length} wallet(s) live. This can take a few minutes; ` +
+      "the report follows automatically.",
+    config,
+    logger,
+  );
+
+  state.perfTask = (async () => {
+    let checked = 0;
+    const failures = [];
+
+    for (const address of stale) {
+      try {
+        const result = await runWalletCheck({ address, configPath, logger });
+        recordLiveCheck(config, result);
+        checked += 1;
+      } catch (error) {
+        failures.push(`${shortAddress(address)}: ${error.message}`);
+        logger.warn(`Perf re-check failed for ${address}: ${error.message}`);
+      }
+    }
+
+    const summary = performanceSummary(loadPerformance(config), {
+      horizonDays: days,
+    });
+    const header =
+      `✅ Re-checked ${checked} wallet(s)` +
+      (failures.length > 0 ? ` · ${failures.length} failed` : "") +
+      "\n\n";
+
+    await sendTelegramMessage(
+      chatId,
+      header + formatPerformanceReport(summary),
+      config,
+      logger,
+    );
+    logger.info(
+      `Perf refresh finished: ${checked} checked, ${failures.length} failed.`,
+    );
+  })()
+    .catch((error) => {
+      logger.error(`Perf refresh failed: ${error.message}`);
+    })
+    .finally(() => {
+      state.perfTask = null;
+    });
+}
+
 async function handleExport({ chatId, mode, config, logger }) {
   const settings = config.export?.gmgn || {};
   const fullPath = path.join(
@@ -1507,6 +1670,18 @@ export async function runBot(ctx) {
 
       if (plan.action?.type === "watch") {
         await handleWatch({
+          chatId,
+          action: plan.action,
+          state,
+          config,
+          configPath,
+          logger,
+        });
+        continue;
+      }
+
+      if (plan.action?.type === "perf") {
+        await handlePerformance({
           chatId,
           action: plan.action,
           state,

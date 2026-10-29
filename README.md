@@ -125,6 +125,7 @@ Run `node finder.js --help` for every option.
 |---|---|
 | `data/last-scan.json` | Full scan result, including per-position detail |
 | `data/state.json` | Wallet scores across watch cycles |
+| `data/performance.json` | Recommendation follow-up history for `/perf` |
 | `data/telegram-offset.json` | Telegram bot update offset (so commands are not replayed) |
 | `data/check-<wallet>.json` | Single-wallet report |
 | `exports/recommended.json` | Wrapper with metadata and criteria |
@@ -592,6 +593,9 @@ Then send `/start` to your bot in Telegram.
 | `/watch off` | Stop scheduled scans |
 | `/watch` | Show the schedule and next run |
 | `/watch now` | Start a scheduled scan immediately |
+| `/perf` | Show how wallets recommended earlier are performing now |
+| `/perf refresh [1-20]` | Re-check tracked wallets live, then report |
+| `/perf --days 7` | Limit the report to the last 7 days |
 | `/export` | Send the latest GMGN file (`gmgn-new.json` if non-empty, else `gmgn-follow.json`) |
 | `/export new` | Send only the new GMGN wallets |
 | `/export full` | Send the full GMGN list |
@@ -715,6 +719,53 @@ process:
 - The schedule is saved in `data/telegram-watch.json`, so it resumes after a
   bot restart. The file is removed when watch is turned off.
 - New recommended wallets found by a scheduled scan are sent as an alert.
+
+### Performance tracking
+
+Every scan records the wallets it recommends as a baseline in
+`data/performance.json`. Later scans and live checks add measurement points, so
+you can see whether the recommendation actually worked.
+
+```text
+/perf
+/perf --days 7
+/perf refresh
+/perf refresh 10
+```
+
+The report shows:
+
+- **Tracked / evaluated / pending** — how many wallets have follow-up data.
+- **Hit rate** — share of wallets whose realised PnL grew after being
+  recommended.
+- **Avg PnL change** — mean USD PnL difference between the first
+  recommendation and the latest check.
+- **Avg ROI change** — mean change in net ROI (percentage points).
+- **Still recommended / active** — how many still pass the score and are still
+  trading.
+- **Best / weakest** wallets since recommendation.
+
+`/perf refresh` re-checks the tracked wallets that have not been measured in
+`performance.staleHours` (default 24h), up to `performance.maxChecks`
+(default 10, hard cap 20). It runs in the background, so the bot stays
+responsive, and it is refused while a scan is running.
+
+From the CLI:
+
+```bash
+node finder.js perf
+node finder.js perf --days 7
+node finder.js perf --json
+```
+
+Config:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `performance.enabled` | `true` | Record recommendations during scans |
+| `performance.staleHours` | `24` | Age before a wallet counts as stale |
+| `performance.maxChecks` | `10` | Default wallets per `/perf refresh` |
+| `performance.checksToKeep` | `20` | Measurement points kept per wallet |
 
 ### Run the bot under PM2
 

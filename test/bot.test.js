@@ -262,6 +262,44 @@ test("BOT_COMMANDS are valid Telegram commands and all are handled", () => {
   }
 });
 
+test("perf command parses refresh, limit, and day window", () => {
+  const state = createBotState();
+
+  const plain = commandPlan({ text: "/perf", state, config: CONFIG });
+  assert.equal(plain.action.type, "perf");
+  assert.equal(plain.action.refresh, false);
+
+  const refresh = commandPlan({
+    text: "/perf refresh 5",
+    state,
+    config: CONFIG,
+  });
+  assert.equal(refresh.action.refresh, true);
+  assert.equal(refresh.action.limit, 5);
+
+  const days = commandPlan({
+    text: "/perf --days 7",
+    state,
+    config: CONFIG,
+  });
+  assert.equal(days.action.days, 7);
+  assert.equal(days.action.refresh, false);
+
+  const tooMany = commandPlan({
+    text: "/perf refresh 99",
+    state,
+    config: CONFIG,
+  });
+  assert.match(tooMany.reply, /between 1 and 20/);
+
+  const badDays = commandPlan({
+    text: "/perf --days nope",
+    state,
+    config: CONFIG,
+  });
+  assert.match(badDays.reply, /positive number/);
+});
+
 test("wallet command validates the address and refresh flag", () => {
   const state = createBotState();
   const plan = commandPlan({

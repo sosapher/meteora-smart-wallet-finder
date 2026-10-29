@@ -22,6 +22,12 @@ import {
   writeJsonAtomic,
 } from "./src/output.js";
 import { updateState } from "./src/state.js";
+import {
+  formatPerformanceReport,
+  loadPerformance,
+  performanceSummary,
+  recordScan,
+} from "./src/performance.js";
 import { formatCandidateAlert, sendTelegram } from "./src/telegram.js";
 import { runBot } from "./src/bot.js";
 import {
@@ -49,6 +55,7 @@ USAGE
   node finder.js watch [options]
   node finder.js bot [options]
   node finder.js hygiene <wallet> [options]
+  node finder.js perf [options]
   node finder.js config [options]
 
 COMMANDS
@@ -63,6 +70,8 @@ COMMANDS
   bot               Start the Telegram control bot (/scan, /stop, /status).
   hygiene <wallet>  Check wallet age, SOL balance, on-chain activity, and
                     funding source using Helius RPC.
+  perf              Show how wallets recommended earlier are performing now.
+                    Use --days <n> to limit the window.
   config            Print effective config with secrets masked.
 
 OPTIONS
@@ -80,6 +89,7 @@ OPTIONS
   --json            Print machine-readable JSON
   --interval <min>  Watch interval in minutes (default: watch.intervalMinutes)
   --once            Watch: run a single scan then exit
+  --days <n>        Perf: only wallets recommended in the last n days
   --config <path>   Config file (default: ./config.json)
   --verbose         Debug logs
   --help            Show this help
@@ -96,6 +106,8 @@ EXAMPLES
   node finder.js watch --once
   node finder.js bot
   node finder.js hygiene 7Weigvc3E2kE42djnRFths1ReU62HYf8q1fRVHnexGkK
+  node finder.js perf
+  node finder.js perf --days 7
 
 OUTPUT
   data/last-scan.json                  Full scan result
@@ -106,6 +118,7 @@ OUTPUT
   exports/gmgn-follow.json             Full GMGN batch-import array
   exports/gmgn-new.json                Only wallets never exported before
   data/gmgn-exported.json              GMGN export ledger
+  data/performance.json                Recommendation follow-up history
 
 NOTES
   Smart wallet history is not a guarantee of future performance. This tool is
@@ -430,6 +443,16 @@ async function runScan(ctx, { watchMode = false } = {}) {
     scanConfig,
   );
 
+  const perfResult = recordScan(scanConfig, result, {
+    now: result.meta.generatedAt,
+  });
+  if (perfResult.added > 0 || perfResult.updated > 0) {
+    logger.info(
+      `Performance: ${perfResult.added} new recommendation(s), ` +
+        `${perfResult.updated} re-measured.`,
+    );
+  }
+
   if (watchMode) {
     const shouldAlert =
       (!stateResult.firstRun || scanConfig.watch.alertOnFirstRun) &&
@@ -719,6 +742,30 @@ async function runWatch(ctx) {
   return null;
 }
 
+async function runPerf(ctx) {
+  const { config, args, logger } = ctx;
+  const perf = loadPerformance(config);
+  const days = args.days ? Number(args.days) : null;
+  if (args.days && (!Number.isFinite(days) || days <= 0)) {
+    throw new Error("--days needs a positive number");
+  }
+
+  const summary = performanceSummary(perf, { horizonDays: days });
+
+  if (boolArg(args.json)) {
+    console.log(JSON.stringify(summary, null, 2));
+    return summary;
+  }
+
+  const report = formatPerformanceReport(summary);
+  console.log(report.replace(/<[^>]+>/g, ""));
+  logger.info(
+    `Performance: ${summary.tracked} tracked, ${summary.evaluated} evaluated, ` +
+      `${summary.pending} pending.`,
+  );
+  return summary;
+}
+
 function maskConfig(config) {
   const clone = JSON.parse(JSON.stringify(config));
   if (clone.api?.agentMeridianApiKey) clone.api.agentMeridianApiKey = "***masked***";
@@ -766,6 +813,9 @@ async function main() {
       break;
     case "bot":
       await runBot(ctx);
+      break;
+    case "perf":
+      await runPerf(ctx);
       break;
     case "config":
       await runConfig(ctx);
