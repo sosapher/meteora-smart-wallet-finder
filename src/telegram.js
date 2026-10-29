@@ -104,6 +104,20 @@ export async function getTelegramMe(config, logger = null) {
 }
 
 /**
+ * Register the bot command menu shown when the user types "/" in Telegram.
+ * Returns false instead of throwing: a missing menu must not stop the bot.
+ */
+export async function setTelegramCommands(commands, config, logger = null) {
+  try {
+    await callTelegram(config, "setMyCommands", { commands }, { logger });
+    return true;
+  } catch (error) {
+    logger?.warn(`Telegram setMyCommands failed: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Fetch new updates with long polling. Returns an array of update objects.
  */
 export async function getTelegramUpdates({

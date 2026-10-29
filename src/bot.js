@@ -12,6 +12,7 @@ import {
   getTelegramUpdates,
   sendTelegramDocument,
   sendTelegramMessage,
+  setTelegramCommands,
 } from "./telegram.js";
 import { shortAddress } from "./util.js";
 
@@ -39,8 +40,8 @@ export function helpText() {
     "/stop — stop the running scan",
     "/status — show scan status",
     "/last — show top wallets from the last scan",
-    "/wallet <address> — show wallet details",
-    "/wallet <address> --refresh — run a live wallet check",
+    "/wallet &lt;address&gt; — show wallet details",
+    "/wallet &lt;address&gt; --refresh — run a live wallet check",
     "/watch on 30m — run scheduled scans",
     "/watch off — stop scheduled scans",
     "/watch — show schedule status",
@@ -57,6 +58,24 @@ export function helpText() {
     "<i>Merging into Meridian stays manual: run</i> <code>node finder.js export --merge</code> <i>on the VPS.</i>",
   ].join("\n");
 }
+
+/**
+ * Commands shown in Telegram's "/" menu, so every command can be picked from
+ * the textbox instead of typed by hand.
+ */
+export const BOT_COMMANDS = [
+  { command: "scan", description: "Run a scan with default settings" },
+  { command: "stop", description: "Stop the running scan" },
+  { command: "status", description: "Show scan and watch status" },
+  { command: "last", description: "Show top wallets from the last scan" },
+  { command: "wallet", description: "Show one wallet: /wallet <address>" },
+  { command: "watch", description: "Scheduled scans: on 30m | off | now" },
+  { command: "export", description: "Send the latest GMGN file" },
+  { command: "exporttxt", description: "Send smart wallets as ranked text" },
+  { command: "exporttxtfull", description: "Send every wallet as ranked text" },
+  { command: "id", description: "Show this chat ID" },
+  { command: "help", description: "Show command help" },
+];
 
 export function parseBotCommand(text) {
   const trimmed = String(text ?? "").trim();
@@ -1358,6 +1377,9 @@ export async function runBot(ctx) {
   const state = createBotState();
   let stopping = false;
   let pollController = null;
+
+  const menuOk = await setTelegramCommands(BOT_COMMANDS, config, logger);
+  if (menuOk) logger.info(`Telegram command menu updated (${BOT_COMMANDS.length} commands).`);
 
   const savedWatch = loadWatchSettings(config);
   const watchChat = String(savedWatch.chatId || config.telegram?.chatId || "");

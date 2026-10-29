@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  BOT_COMMANDS,
   allowedChatIds,
   buildScanArgs,
   commandPlan,
@@ -12,6 +13,7 @@ import {
   formatStatus,
   formatWalletReport,
   formatWatchStatus,
+  helpText,
   loadWatchSettings,
   parseBotCommand,
   parseWatchInterval,
@@ -225,6 +227,39 @@ test("saveWatchSettings persists an active schedule and clears it when off", () 
     nextRunAt: 0,
   });
   assert.equal(fs.existsSync(file), false);
+});
+
+test("helpText is safe for Telegram HTML parsing", () => {
+  const text = helpText();
+  const stripped = text.replace(/<\/?(b|i|code|pre|a)\b[^>]*>/g, "");
+  assert.equal(stripped.includes("<"), false, "raw '<' left in help text");
+  assert.equal(stripped.includes(">"), false, "raw '>' left in help text");
+  assert.match(text, /\/wallet &lt;address&gt;/);
+  assert.match(text, /\/watch on 30m/);
+});
+
+test("BOT_COMMANDS are valid Telegram commands and all are handled", () => {
+  const state = createBotState();
+  const seen = new Set();
+
+  for (const entry of BOT_COMMANDS) {
+    assert.match(entry.command, /^[a-z0-9_]{1,32}$/);
+    assert.equal(seen.has(entry.command), false, "duplicate command");
+    seen.add(entry.command);
+    assert.ok(entry.description.length > 0 && entry.description.length <= 256);
+
+    const plan = commandPlan({
+      text: `/${entry.command}`,
+      state,
+      config: CONFIG,
+    });
+    assert.ok(plan, `no plan for /${entry.command}`);
+    assert.doesNotMatch(
+      String(plan.reply || ""),
+      /Unknown command/,
+      `/${entry.command} is not handled`,
+    );
+  }
 });
 
 test("wallet command validates the address and refresh flag", () => {
