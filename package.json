@@ -16,7 +16,8 @@
     "pools": "node finder.js pools",
     "export": "node finder.js export",
     "test": "node --test",
-    "setup": "node -e \"const fs=require('fs'); if(!fs.existsSync('config.json')){fs.copyFileSync('config.example.json','config.json'); console.log('config.json created from config.example.json');} else {console.log('config.json already exists');}\""
+    "setup": "node -e \"const fs=require('fs'); if(!fs.existsSync('config.json')){fs.copyFileSync('config.example.json','config.json'); console.log('config.json created from config.example.json');} else {console.log('config.json already exists');}\"",
+    "backup": "bash scripts/backup.sh"
   },
   "engines": {
     "node": ">=18.0.0"

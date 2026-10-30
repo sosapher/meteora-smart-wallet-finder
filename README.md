@@ -816,6 +816,45 @@ Selection is greedy from the highest score, and drops a wallet when:
 
 `/wallet <address>` also shows the group of a wallet when it has one.
 
+### Backups and log rotation
+
+`config.json` and `data/` cannot be regenerated: the config holds the bot token
+and API keys, and `data/performance.json` holds the recommendation history that
+`/perf` needs. `scripts/backup.sh` archives both, skips the disposable API
+cache, and keeps the newest seven archives:
+
+```bash
+npm run backup          # or: scripts/backup.sh
+```
+
+- Archives land in `~/swf-backups/swf-<UTC timestamp>.tar.gz`.
+- Directory mode is `700`, archive mode is `600`, because the config contains
+  secrets.
+- Override with `BACKUP_DIR` and `BACKUP_KEEP`.
+- Restore with `tar -xzf <archive> -C ~/meteora-smart-wallet-finder`.
+
+Daily cron entry (03:00 server time):
+
+```cron
+0 3 * * * /home/ubuntu/meteora-smart-wallet-finder/scripts/backup.sh >> /home/ubuntu/swf-backups/backup.log 2>&1
+```
+
+PM2 logs are rotated with `pm2-logrotate` (10 MB per file, 7 files kept,
+compressed):
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 10M
+pm2 set pm2-logrotate:retain 7
+pm2 set pm2-logrotate:compress true
+```
+
+Keep `config.json` readable by its owner only:
+
+```bash
+chmod 600 config.json
+```
+
 ### Run the bot under PM2
 
 ```bash
